@@ -23,6 +23,10 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+.cache/
+.config/
+.local/
+.tmp/
 *.egg-info/
 
 # 运行日志

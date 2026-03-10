@@ -31,4 +31,4 @@ python tiles/build_vrt.py
 python detect_and_evaluate.py   # requires GPU
 ```
 
-Detection skips if `results/<GridID>/predictions.geojson` exists. Delete to re-run.
+Detection writes `results/<GridID>/config.json` alongside predictions and only reuses prior outputs when the saved config matches current code/parameters. Use `python detect_and_evaluate.py --force` to re-run detection explicitly.

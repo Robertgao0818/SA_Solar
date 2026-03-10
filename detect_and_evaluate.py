@@ -13,8 +13,12 @@ Solar Panel Detection & Evaluation Pipeline
   pip install geoai-py geopandas shapely scikit-learn matplotlib seaborn rasterio
 """
 
+import argparse
+import hashlib
+import json
 import sys
 import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 
 import geopandas as gpd
@@ -23,9 +27,17 @@ matplotlib.use("Agg")  # 非交互式后端
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import rasterio
 import seaborn as sns
 from shapely.geometry import box
 from shapely.ops import unary_union
+
+from grid_utils import (
+    COMBINED_ANNOTATION_GPKG,
+    DEFAULT_GRID_ID,
+    get_grid_paths,
+    normalize_grid_id,
+)
 
 warnings.filterwarnings("ignore")
 
@@ -33,7 +45,7 @@ warnings.filterwarnings("ignore")
 # 配置常量
 # ════════════════════════════════════════════════════════════════════════
 BASE_DIR      = Path(__file__).parent
-GRID_ID       = "G1238"
+GRID_ID       = DEFAULT_GRID_ID
 TILES_DIR     = BASE_DIR / "tiles" / GRID_ID
 GT_GPKG       = BASE_DIR / "data" / "annotations" / f"{GRID_ID}.gpkg"
 GT_GEOJSON    = BASE_DIR / "data" / "annotations" / f"{GRID_ID.lower()}.geojson"
@@ -57,14 +69,249 @@ BATCH_SIZE           = 4
 # 评估参数
 IOU_THRESHOLDS       = [0.1, 0.2, 0.3, 0.5, 0.7]
 DEFAULT_IOU          = 0.3
-TARGET_CRS           = "EPSG:4326"  # WGS 84（开普敦适用）
+INPUT_CRS            = "EPSG:4326"   # QGIS 标注/交换、原始瓦片地理参考
+METRIC_CRS           = "EPSG:32734"  # 开普敦适用的米制计算 CRS（UTM 34S）
+EXPORT_CRS           = INPUT_CRS     # 导出回 QGIS 时统一使用 4326
 
 # 输出文件路径
 PREDICTIONS_PATH         = OUTPUT_DIR / "predictions.geojson"
+PREDICTIONS_METRIC_PATH  = OUTPUT_DIR / "predictions_metric.gpkg"
+CONFIG_PATH              = OUTPUT_DIR / "config.json"
 CONFIDENCE_HIST_PATH     = OUTPUT_DIR / "confidence_histogram.png"
 PR_CURVE_PATH            = OUTPUT_DIR / "precision_recall_curve.png"
 IOU_METRICS_PATH         = OUTPUT_DIR / "iou_threshold_metrics.png"
 EVALUATION_CSV_PATH      = OUTPUT_DIR / "evaluation_per_tile.csv"
+SCRIPT_SHA256            = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def set_grid_context(grid_id: str = DEFAULT_GRID_ID,
+                     output_subdir: str | None = None) -> None:
+    """更新当前运行使用的 grid 路径上下文。"""
+    global GRID_ID
+    global TILES_DIR
+    global GT_GPKG
+    global GT_GEOJSON
+    global OUTPUT_DIR
+    global MASKS_DIR
+    global VECTORS_DIR
+    global PREDICTIONS_PATH
+    global PREDICTIONS_METRIC_PATH
+    global CONFIG_PATH
+    global CONFIDENCE_HIST_PATH
+    global PR_CURVE_PATH
+    global IOU_METRICS_PATH
+    global EVALUATION_CSV_PATH
+    global ERROR_ANALYSIS_PATH
+    global FN_ANALYSIS_PATH
+
+    paths = get_grid_paths(grid_id, output_subdir=output_subdir)
+    GRID_ID = paths.grid_id
+    TILES_DIR = paths.tiles_dir
+    GT_GPKG = paths.gt_gpkg
+    GT_GEOJSON = paths.gt_geojson
+    OUTPUT_DIR = paths.output_dir
+    MASKS_DIR = OUTPUT_DIR / "masks"
+    VECTORS_DIR = OUTPUT_DIR / "vectors"
+    PREDICTIONS_PATH = OUTPUT_DIR / "predictions.geojson"
+    PREDICTIONS_METRIC_PATH = OUTPUT_DIR / "predictions_metric.gpkg"
+    CONFIG_PATH = OUTPUT_DIR / "config.json"
+    CONFIDENCE_HIST_PATH = OUTPUT_DIR / "confidence_histogram.png"
+    PR_CURVE_PATH = OUTPUT_DIR / "precision_recall_curve.png"
+    IOU_METRICS_PATH = OUTPUT_DIR / "iou_threshold_metrics.png"
+    EVALUATION_CSV_PATH = OUTPUT_DIR / "evaluation_per_tile.csv"
+    ERROR_ANALYSIS_PATH = OUTPUT_DIR / "error_analysis.csv"
+    FN_ANALYSIS_PATH = OUTPUT_DIR / "fn_analysis.csv"
+
+
+set_grid_context(DEFAULT_GRID_ID)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 辅助函数：CRS 统一
+# ════════════════════════════════════════════════════════════════════════
+def ensure_crs(gdf: gpd.GeoDataFrame,
+               assumed_crs: str,
+               label: str) -> gpd.GeoDataFrame:
+    """为缺失 CRS 的 GeoDataFrame 补默认 CRS。"""
+    if gdf.crs is None:
+        print(f"  [INFO] {label} 无 CRS，假设为 {assumed_crs}")
+        gdf = gdf.set_crs(assumed_crs)
+    return gdf
+
+
+def to_metric_crs(gdf: gpd.GeoDataFrame,
+                  assumed_crs: str,
+                  label: str) -> gpd.GeoDataFrame:
+    """统一到米制计算 CRS。"""
+    gdf = ensure_crs(gdf, assumed_crs=assumed_crs, label=label)
+    if str(gdf.crs) != METRIC_CRS:
+        gdf = gdf.to_crs(METRIC_CRS)
+    return gdf
+
+
+def to_export_crs(gdf: gpd.GeoDataFrame,
+                  assumed_crs: str,
+                  label: str) -> gpd.GeoDataFrame:
+    """统一到 QGIS 友好的导出 CRS。"""
+    gdf = ensure_crs(gdf, assumed_crs=assumed_crs, label=label)
+    if str(gdf.crs) != EXPORT_CRS:
+        gdf = gdf.to_crs(EXPORT_CRS)
+    return gdf
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 辅助函数：实验可追溯性
+# ════════════════════════════════════════════════════════════════════════
+def _json_ready(value):
+    """将配置对象标准化为可稳定序列化的 JSON 值。"""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, tuple):
+        return [_json_ready(v) for v in value]
+    if isinstance(value, list):
+        return [_json_ready(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _json_ready(v) for k, v in sorted(value.items())}
+    return value
+
+
+def build_detection_config(
+    chip_size=None,
+    overlap=None,
+    min_object_area=None,
+    confidence_threshold=None,
+    mask_threshold=None,
+    output_dir=None,
+) -> dict:
+    """构建检测阶段配置快照，用于结果复用校验。"""
+    return {
+        "grid_id": GRID_ID,
+        "tiles_dir": Path(TILES_DIR).resolve(),
+        "output_dir": Path(output_dir or OUTPUT_DIR).resolve(),
+        "script_sha256": SCRIPT_SHA256,
+        "chip_size": chip_size or CHIP_SIZE,
+        "overlap": overlap if overlap is not None else OVERLAP,
+        "min_object_area": (
+            min_object_area if min_object_area is not None else MIN_OBJECT_AREA
+        ),
+        "confidence_threshold": (
+            confidence_threshold
+            if confidence_threshold is not None else CONFIDENCE_THRESHOLD
+        ),
+        "mask_threshold": (
+            mask_threshold if mask_threshold is not None else MASK_THRESHOLD
+        ),
+        "post_conf_threshold": POST_CONF_THRESHOLD,
+        "max_elongation": MAX_ELONGATION,
+        "min_solidity": MIN_SOLIDITY,
+        "shadow_rgb_thresh": SHADOW_RGB_THRESH,
+        "batch_size": BATCH_SIZE,
+        "input_crs": INPUT_CRS,
+        "metric_crs": METRIC_CRS,
+        "export_crs": EXPORT_CRS,
+    }
+
+
+def write_run_config(
+    config_path: Path,
+    config: dict,
+    *,
+    result_count: int | None = None,
+) -> None:
+    """将当前实验配置写入 config.json。"""
+    payload = {
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "config": _json_ready(config),
+        "artifacts": {
+            "predictions_metric": "predictions_metric.gpkg",
+            "predictions_export": "predictions.geojson",
+        },
+    }
+    if result_count is not None:
+        payload["result_count"] = int(result_count)
+    config_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def load_run_config(config_path: Path) -> dict | None:
+    """读取 config.json。读取失败时返回 None。"""
+    if not config_path.exists():
+        return None
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
+def prepare_geoai_input_raster(tif_path: Path, scratch_dir: Path) -> Path:
+    """为 geoai 生成兼容输入，避免 YCbCr 源图复制 profile 后导致 mask 写出失败。"""
+    with rasterio.open(str(tif_path)) as src:
+        profile = src.profile.copy()
+        photometric = str(profile.get("photometric", "")).lower()
+
+        if photometric != "ycbcr":
+            return tif_path
+
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+        prepared_path = scratch_dir / f"{tif_path.stem}_geoai_input.tif"
+        if prepared_path.exists():
+            return prepared_path
+
+        write_profile = profile.copy()
+        for key in ("photometric", "compress", "jpeg_quality", "jpegtablesmode"):
+            write_profile.pop(key, None)
+        write_profile.update(driver="GTiff", compress="lzw")
+
+        with rasterio.open(str(prepared_path), "w", **write_profile) as dst:
+            for band_idx in range(1, src.count + 1):
+                dst.write(src.read(band_idx), band_idx)
+
+    print(f"    [INFO] 为 geoai 准备兼容输入: {prepared_path.name}")
+    return prepared_path
+
+
+def is_empty_geometry_result_error(exc: Exception) -> bool:
+    """识别 geoai 在空矢量结果上抛出的已知异常。"""
+    return "Assigning CRS to a GeoDataFrame without a geometry column" in str(exc)
+
+
+def should_reuse_predictions(
+    output_dir: Path,
+    config: dict,
+    *,
+    force: bool = False,
+) -> bool:
+    """判断现有预测结果是否可直接复用。"""
+    predictions_exist = (
+        (output_dir / "predictions_metric.gpkg").exists()
+        or (output_dir / "predictions.geojson").exists()
+    )
+    if not predictions_exist:
+        return False
+
+    if force:
+        print("[INFO] --force 已指定，忽略现有预测结果并重新检测")
+        return False
+
+    saved = load_run_config(output_dir / "config.json")
+    if saved is None:
+        raise RuntimeError(
+            f"{output_dir / 'config.json'} 缺失或损坏，无法确认现有结果来自哪套配置。"
+            " 请使用 --force 重新检测。"
+        )
+
+    saved_config = saved.get("config")
+    current_config = _json_ready(config)
+    if saved_config != current_config:
+        raise RuntimeError(
+            "现有预测结果与当前配置不一致，继续评估会变成“新代码评估旧结果”。"
+            " 请使用 --force 重新检测。"
+        )
+
+    print(f"[INFO] 检测配置一致，复用已有结果: {output_dir}")
+    return True
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -120,6 +367,7 @@ def detect_solar_panels(
     confidence_threshold=None,
     mask_threshold=None,
     output_dir=None,
+    save_config=True,
 ) -> gpd.GeoDataFrame:
     """
     使用 geoai SolarPanelDetector 对每张 GeoTIFF 进行检测。
@@ -134,6 +382,16 @@ def detect_solar_panels(
     _masks_dir = _output_dir / "masks"
     _vectors_dir = _output_dir / "vectors"
     _predictions_path = _output_dir / "predictions.geojson"
+    _predictions_metric_path = _output_dir / "predictions_metric.gpkg"
+    _config_path = _output_dir / "config.json"
+    _config = build_detection_config(
+        chip_size=_chip_size,
+        overlap=_overlap,
+        min_object_area=_min_object_area,
+        confidence_threshold=_confidence_threshold,
+        mask_threshold=_mask_threshold,
+        output_dir=_output_dir,
+    )
 
     _output_dir.mkdir(parents=True, exist_ok=True)
     _masks_dir.mkdir(parents=True, exist_ok=True)
@@ -183,8 +441,10 @@ def detect_solar_panels(
             try:
                 _buildings = gpd.read_file(str(BUILDINGS_GPKG))
                 if len(_buildings) > 0:
-                    bldg_utm = _buildings.to_crs(TARGET_CRS)
-                    bldg_utm["geometry"] = bldg_utm.geometry.buffer(2)
+                    bldg_metric = to_metric_crs(
+                        _buildings, assumed_crs=INPUT_CRS, label="建筑轮廓"
+                    )
+                    bldg_metric["geometry"] = bldg_metric.geometry.buffer(2)
                     bldg_crs_cache = _buildings.crs  # 原始 CRS
                     bldg_union_cache = {}  # 按 CRS 缓存
                     print(f"[建筑掩膜] 已加载 {len(_buildings)} 个建筑轮廓 (buffer=2m)")
@@ -198,10 +458,14 @@ def detect_solar_panels(
             print(f"  [{idx}/{len(geo_tifs)}] 检测中: {tile_name}")
 
             try:
+                prepared_tif_path = prepare_geoai_input_raster(
+                    tif_path, _masks_dir / "_geoai_input_cache"
+                )
+
                 # 生成掩膜 → 矢量化
                 mask_path = _masks_dir / f"{tile_name}_mask.tif"
                 masks_result = detector.generate_masks(
-                    str(tif_path),
+                    str(prepared_tif_path),
                     output_path=str(mask_path),
                     confidence_threshold=_confidence_threshold,
                     mask_threshold=_mask_threshold,
@@ -214,11 +478,17 @@ def detect_solar_panels(
 
                 # 矢量化：正交化多边形
                 vector_path = _vectors_dir / f"{tile_name}_vectors.geojson"
-                gdf_tile = geoai.orthogonalize(
-                    input_path=masks_result,
-                    output_path=str(vector_path),
-                    epsilon=0.2,
-                )
+                try:
+                    gdf_tile = geoai.orthogonalize(
+                        input_path=masks_result,
+                        output_path=str(vector_path),
+                        epsilon=0.2,
+                    )
+                except Exception as exc:
+                    if is_empty_geometry_result_error(exc):
+                        print("    -> 未检测到可矢量化多边形")
+                        continue
+                    raise
 
                 if gdf_tile is not None and len(gdf_tile) > 0:
                     # --- 从 mask band 2 回填 confidence ---
@@ -283,6 +553,12 @@ def detect_solar_panels(
 
         # 合并所有检测结果
         pred_gdf = pd.concat(all_gdfs, ignore_index=True)
+        pred_gdf = ensure_crs(
+            pred_gdf,
+            assumed_crs=METRIC_CRS,
+            label="检测结果",
+        )
+        pred_gdf = pred_gdf.to_crs(METRIC_CRS)
 
         # 空间 NMS 去重：chip 重叠导致同一目标被重复检测
         pred_gdf = spatial_nms(pred_gdf, iou_threshold=0.5)
@@ -317,8 +593,16 @@ def detect_solar_panels(
         print(f"置信度过滤: {len(pred_gdf)} / {pre_conf_count} 个多边形保留"
               f"（confidence>={POST_CONF_THRESHOLD}）")
 
-        pred_gdf.to_file(str(_predictions_path), driver="GeoJSON")
-        print(f"\n[OK] predictions saved: {_predictions_path}")
+        pred_gdf.to_file(str(_predictions_metric_path), driver="GPKG")
+        export_gdf = to_export_crs(
+            pred_gdf, assumed_crs=METRIC_CRS, label="预测结果"
+        )
+        export_gdf.to_file(str(_predictions_path), driver="GeoJSON")
+        if save_config:
+            write_run_config(_config_path, _config, result_count=len(pred_gdf))
+        print(f"\n[OK] metric predictions saved: {_predictions_metric_path}")
+        print(f"[OK] QGIS export saved: {_predictions_path} ({EXPORT_CRS})")
+        print(f"[OK] detection config saved: {_config_path}")
         print(f"    总计 {len(pred_gdf)} 个太阳能板检测多边形")
         return pred_gdf
 
@@ -373,8 +657,17 @@ def detect_solar_panels(
             sys.exit(1)
 
         pred_gdf = pd.concat(all_gdfs, ignore_index=True)
-        pred_gdf.to_file(str(_predictions_path), driver="GeoJSON")
-        print(f"\n[OK] predictions saved: {_predictions_path}")
+        pred_gdf = to_metric_crs(pred_gdf, assumed_crs=INPUT_CRS, label="检测结果")
+        pred_gdf.to_file(str(_predictions_metric_path), driver="GPKG")
+        export_gdf = to_export_crs(
+            pred_gdf, assumed_crs=METRIC_CRS, label="预测结果"
+        )
+        export_gdf.to_file(str(_predictions_path), driver="GeoJSON")
+        if save_config:
+            write_run_config(_config_path, _config, result_count=len(pred_gdf))
+        print(f"\n[OK] metric predictions saved: {_predictions_metric_path}")
+        print(f"[OK] QGIS export saved: {_predictions_path} ({EXPORT_CRS})")
+        print(f"[OK] detection config saved: {_config_path}")
         return pred_gdf
 
     except ImportError:
@@ -388,7 +681,7 @@ def detect_solar_panels(
 # 第二步：加载真值数据
 # ════════════════════════════════════════════════════════════════════════
 def load_ground_truth() -> gpd.GeoDataFrame:
-    """加载真值多边形，统一投影到 UTM"""
+    """加载真值多边形，并统一到米制计算 CRS。"""
     print("\n" + "=" * 60)
     print("加载真值数据 (Ground Truth)...")
 
@@ -421,34 +714,64 @@ def load_ground_truth() -> gpd.GeoDataFrame:
             print(f"  [ERROR] 读取 GeoJSON 也失败: {e}")
             sys.exit(1)
 
+    if gt is None and COMBINED_ANNOTATION_GPKG.exists():
+        try:
+            combined = gpd.read_file(str(COMBINED_ANNOTATION_GPKG))
+            name_cols = [c for c in combined.columns if c.lower() in {"name", "gridcell_id", "grid_id"}]
+            gt = None
+            if "gridcell_id" in combined.columns:
+                mask = combined["gridcell_id"].astype(str) == GRID_ID
+                if mask.any():
+                    gt = combined.loc[mask].copy()
+            if gt is None and "grid_id" in combined.columns:
+                mask = combined["grid_id"].astype(str) == GRID_ID
+                if mask.any():
+                    gt = combined.loc[mask].copy()
+            if gt is None:
+                for col in ["Name", "name", "unique_id", "panel_id", "id"]:
+                    if col in combined.columns:
+                        mask = combined[col].astype(str).str.startswith(f"{GRID_ID}_", na=False)
+                        if mask.any():
+                            gt = combined.loc[mask].copy()
+                            break
+            if gt is not None:
+                print(
+                    f"  已从 {COMBINED_ANNOTATION_GPKG.name} 过滤 {GRID_ID} 标注 "
+                    f"({len(gt)} 个多边形)"
+                )
+        except Exception as e:
+            print(f"  [WARNING] 读取合并标注失败: {e}")
+
     if gt is None:
         print("[ERROR] 未找到任何真值文件 (g1238.gpkg 或 g1238.geojson)")
         sys.exit(1)
 
     # 统一投影
-    if gt.crs is None:
-        print("  [INFO] 真值数据无 CRS，假设为 EPSG:4326")
-        gt = gt.set_crs("EPSG:4326")
-    gt = gt.to_crs(TARGET_CRS)
+    gt = to_metric_crs(gt, assumed_crs=INPUT_CRS, label="真值数据")
 
     # 确保都是有效的几何体
     gt = gt[gt.geometry.notnull() & gt.is_valid].copy()
-    print(f"  统一投影到 {TARGET_CRS}，有效多边形: {len(gt)} 个")
+    print(f"  输入 CRS 按 {INPUT_CRS} 解释，计算统一到 {METRIC_CRS}")
+    print(f"  有效多边形: {len(gt)} 个")
     return gt
 
 
 def load_predictions() -> gpd.GeoDataFrame:
-    """加载预测结果并统一投影"""
-    if not PREDICTIONS_PATH.exists():
-        print(f"[ERROR] 预测文件不存在: {PREDICTIONS_PATH}")
+    """加载预测结果，并统一到米制计算 CRS。"""
+    pred_path = None
+    if PREDICTIONS_METRIC_PATH.exists():
+        pred_path = PREDICTIONS_METRIC_PATH
+    elif PREDICTIONS_PATH.exists():
+        pred_path = PREDICTIONS_PATH
+    else:
+        print(f"[ERROR] 预测文件不存在: {PREDICTIONS_METRIC_PATH} / {PREDICTIONS_PATH}")
         sys.exit(1)
 
-    pred = gpd.read_file(str(PREDICTIONS_PATH))
-    print(f"  已加载预测结果: {len(pred)} 个多边形")
+    pred = gpd.read_file(str(pred_path))
+    print(f"  已加载预测结果: {len(pred)} 个多边形 ({pred_path.name})")
 
-    if pred.crs is None:
-        pred = pred.set_crs("EPSG:4326")
-    pred = pred.to_crs(TARGET_CRS)
+    assumed_crs = METRIC_CRS if pred_path == PREDICTIONS_METRIC_PATH else EXPORT_CRS
+    pred = to_metric_crs(pred, assumed_crs=assumed_crs, label="预测结果")
 
     pred = pred[pred.geometry.notnull() & pred.is_valid].copy()
     return pred
@@ -655,7 +978,7 @@ def evaluate_per_tile(gt: gpd.GeoDataFrame,
                 geometry=[box(tile_bounds.left, tile_bounds.bottom,
                               tile_bounds.right, tile_bounds.top)],
                 crs=tile_crs,
-            ).to_crs(TARGET_CRS).geometry[0]
+            ).to_crs(METRIC_CRS).geometry[0]
 
             # 筛选落入该 tile 的 GT 和 Pred
             gt_in_tile   = gt[gt.geometry.intersects(tile_box)]
@@ -888,9 +1211,9 @@ def analyze_errors(gt: gpd.GeoDataFrame,
     fn_gt = gt.loc[~gt.index.isin(metrics["matched_gt_indices"])].copy()
 
     if len(fn_gt) > 0:
-        # 计算面积（投影到 UTM 34S）
-        fn_utm = fn_gt.to_crs("EPSG:32734")
-        fn_gt["area_m2"] = fn_utm.geometry.area
+        # 计算面积（统一使用米制计算 CRS）
+        fn_metric = fn_gt.to_crs(METRIC_CRS)
+        fn_gt["area_m2"] = fn_metric.geometry.area
 
         fn_gt["size_class"] = pd.cut(
             fn_gt["area_m2"],
@@ -931,6 +1254,8 @@ def print_report(gt: gpd.GeoDataFrame,
   太阳能板检测评估报告
   Solar Panel Detection Evaluation Report
 {'=' * 50}
+计算 CRS            : {METRIC_CRS}
+导出 CRS            : {EXPORT_CRS}
 真值多边形总数     : {len(gt)}
 预测多边形总数     : {len(pred)}
 {'─' * 50}"""
@@ -960,6 +1285,7 @@ confidence stats (IoU={DEFAULT_IOU}):
 {'=' * 50}
 
 输出文件：
+  - {PREDICTIONS_METRIC_PATH}
   - {PREDICTIONS_PATH}
   - {CONFIDENCE_HIST_PATH}
   - {PR_CURVE_PATH}
@@ -978,19 +1304,96 @@ confidence stats (IoU={DEFAULT_IOU}):
 # ════════════════════════════════════════════════════════════════════════
 # 主流程
 # ════════════════════════════════════════════════════════════════════════
-def main():
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="太阳能板检测与评估流水线"
+    )
+    parser.add_argument(
+        "--grid-id",
+        default=DEFAULT_GRID_ID,
+        help=f"目标 grid，默认 {DEFAULT_GRID_ID}",
+    )
+    parser.add_argument(
+        "--output-subdir",
+        default=None,
+        help="结果输出到 results/<grid>/<subdir>/",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="忽略已有 predictions/config.json，重新执行检测",
+    )
+    parser.add_argument(
+        "--chip-size",
+        type=int,
+        default=None,
+        help="检测 chip 边长像素，传 400 等价于 (400, 400)",
+    )
+    parser.add_argument(
+        "--overlap",
+        type=float,
+        default=None,
+        help="检测 chip overlap，例如 0.25",
+    )
+    parser.add_argument(
+        "--min-object-area",
+        type=float,
+        default=None,
+        help="后处理最小面积阈值（m²）",
+    )
+    parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=None,
+        help="模型置信度阈值",
+    )
+    parser.add_argument(
+        "--mask-threshold",
+        type=float,
+        default=None,
+        help="掩膜阈值",
+    )
+    return parser.parse_args()
+
+
+def main(force: bool = False,
+         grid_id: str = DEFAULT_GRID_ID,
+         output_subdir: str | None = None,
+         chip_size: int | None = None,
+         overlap: float | None = None,
+         min_object_area: float | None = None,
+         confidence_threshold: float | None = None,
+         mask_threshold: float | None = None):
+    set_grid_context(normalize_grid_id(grid_id), output_subdir=output_subdir)
+
     print("╔════════════════════════════════════════════════════════╗")
     print("║  太阳能板检测 & 评估流水线                             ║")
     print("║  Solar Panel Detection & Evaluation Pipeline          ║")
     print("╚════════════════════════════════════════════════════════╝\n")
+    print(f"[GRID] {GRID_ID}")
+    print(f"[OUT ] {OUTPUT_DIR}")
 
     # ── Step 1: 检测 ──────────────────────────────────────────────────
-    if PREDICTIONS_PATH.exists():
-        print(f"[INFO] 已存在预测文件 {PREDICTIONS_PATH.name}，跳过检测步骤")
-        print("       若需重新检测，请删除该文件后重新运行")
+    detect_chip_size = (chip_size, chip_size) if chip_size is not None else None
+    detection_config = build_detection_config(
+        chip_size=detect_chip_size,
+        overlap=overlap,
+        min_object_area=min_object_area,
+        confidence_threshold=confidence_threshold,
+        mask_threshold=mask_threshold,
+        output_dir=OUTPUT_DIR,
+    )
+    if should_reuse_predictions(OUTPUT_DIR, detection_config, force=force):
         pred = load_predictions()
     else:
-        pred = detect_solar_panels()
+        pred = detect_solar_panels(
+            chip_size=detect_chip_size,
+            overlap=overlap,
+            min_object_area=min_object_area,
+            confidence_threshold=confidence_threshold,
+            mask_threshold=mask_threshold,
+            output_dir=str(OUTPUT_DIR),
+        )
         pred = load_predictions()  # 重新加载以确保 CRS 统一
 
     # ── Step 2: 加载真值 ──────────────────────────────────────────────
@@ -1042,4 +1445,18 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    try:
+        main(
+            force=args.force,
+            grid_id=args.grid_id,
+            output_subdir=args.output_subdir,
+            chip_size=args.chip_size,
+            overlap=args.overlap,
+            min_object_area=args.min_object_area,
+            confidence_threshold=args.confidence_threshold,
+            mask_threshold=args.mask_threshold,
+        )
+    except RuntimeError as exc:
+        print(f"[ERROR] {exc}")
+        sys.exit(1)
