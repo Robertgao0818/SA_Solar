@@ -35,6 +35,7 @@ from shapely.ops import unary_union
 from grid_utils import (
     COMBINED_ANNOTATION_GPKG,
     DEFAULT_GRID_ID,
+    get_metric_crs,
     get_grid_paths,
     normalize_grid_id,
 )
@@ -70,7 +71,8 @@ BATCH_SIZE           = 4
 IOU_THRESHOLDS       = [0.1, 0.2, 0.3, 0.5, 0.7]
 DEFAULT_IOU          = 0.3
 INPUT_CRS            = "EPSG:4326"   # QGIS 标注/交换、原始瓦片地理参考
-METRIC_CRS           = "EPSG:32734"  # 开普敦适用的米制计算 CRS（UTM 34S）
+DEFAULT_METRIC_CRS   = "EPSG:32734"
+METRIC_CRS           = DEFAULT_METRIC_CRS
 EXPORT_CRS           = INPUT_CRS     # 导出回 QGIS 时统一使用 4326
 
 # 输出文件路径
@@ -81,6 +83,7 @@ CONFIDENCE_HIST_PATH     = OUTPUT_DIR / "confidence_histogram.png"
 PR_CURVE_PATH            = OUTPUT_DIR / "precision_recall_curve.png"
 IOU_METRICS_PATH         = OUTPUT_DIR / "iou_threshold_metrics.png"
 EVALUATION_CSV_PATH      = OUTPUT_DIR / "evaluation_per_tile.csv"
+SIZE_STRATIFIED_CSV_PATH = OUTPUT_DIR / "size_stratified_metrics.csv"
 SCRIPT_SHA256            = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
@@ -94,6 +97,7 @@ def set_grid_context(grid_id: str = DEFAULT_GRID_ID,
     global OUTPUT_DIR
     global MASKS_DIR
     global VECTORS_DIR
+    global METRIC_CRS
     global PREDICTIONS_PATH
     global PREDICTIONS_METRIC_PATH
     global CONFIG_PATH
@@ -101,6 +105,7 @@ def set_grid_context(grid_id: str = DEFAULT_GRID_ID,
     global PR_CURVE_PATH
     global IOU_METRICS_PATH
     global EVALUATION_CSV_PATH
+    global SIZE_STRATIFIED_CSV_PATH
     global ERROR_ANALYSIS_PATH
     global FN_ANALYSIS_PATH
 
@@ -112,6 +117,7 @@ def set_grid_context(grid_id: str = DEFAULT_GRID_ID,
     OUTPUT_DIR = paths.output_dir
     MASKS_DIR = OUTPUT_DIR / "masks"
     VECTORS_DIR = OUTPUT_DIR / "vectors"
+    METRIC_CRS = get_metric_crs(GRID_ID)
     PREDICTIONS_PATH = OUTPUT_DIR / "predictions.geojson"
     PREDICTIONS_METRIC_PATH = OUTPUT_DIR / "predictions_metric.gpkg"
     CONFIG_PATH = OUTPUT_DIR / "config.json"
@@ -119,6 +125,7 @@ def set_grid_context(grid_id: str = DEFAULT_GRID_ID,
     PR_CURVE_PATH = OUTPUT_DIR / "precision_recall_curve.png"
     IOU_METRICS_PATH = OUTPUT_DIR / "iou_threshold_metrics.png"
     EVALUATION_CSV_PATH = OUTPUT_DIR / "evaluation_per_tile.csv"
+    SIZE_STRATIFIED_CSV_PATH = OUTPUT_DIR / "size_stratified_metrics.csv"
     ERROR_ANALYSIS_PATH = OUTPUT_DIR / "error_analysis.csv"
     FN_ANALYSIS_PATH = OUTPUT_DIR / "fn_analysis.csv"
 
@@ -181,7 +188,9 @@ def build_detection_config(
     min_object_area=None,
     confidence_threshold=None,
     mask_threshold=None,
+    post_conf_threshold=None,
     output_dir=None,
+    model_path=None,
 ) -> dict:
     """构建检测阶段配置快照，用于结果复用校验。"""
     return {
@@ -189,6 +198,7 @@ def build_detection_config(
         "tiles_dir": Path(TILES_DIR).resolve(),
         "output_dir": Path(output_dir or OUTPUT_DIR).resolve(),
         "script_sha256": SCRIPT_SHA256,
+        "model_path": str(Path(model_path).resolve()) if model_path else None,
         "chip_size": chip_size or CHIP_SIZE,
         "overlap": overlap if overlap is not None else OVERLAP,
         "min_object_area": (
@@ -201,7 +211,10 @@ def build_detection_config(
         "mask_threshold": (
             mask_threshold if mask_threshold is not None else MASK_THRESHOLD
         ),
-        "post_conf_threshold": POST_CONF_THRESHOLD,
+        "post_conf_threshold": (
+            post_conf_threshold
+            if post_conf_threshold is not None else POST_CONF_THRESHOLD
+        ),
         "max_elongation": MAX_ELONGATION,
         "min_solidity": MIN_SOLIDITY,
         "shadow_rgb_thresh": SHADOW_RGB_THRESH,
@@ -366,8 +379,10 @@ def detect_solar_panels(
     min_object_area=None,
     confidence_threshold=None,
     mask_threshold=None,
+    post_conf_threshold=None,
     output_dir=None,
     save_config=True,
+    model_path=None,
 ) -> gpd.GeoDataFrame:
     """
     使用 geoai SolarPanelDetector 对每张 GeoTIFF 进行检测。
@@ -378,6 +393,9 @@ def detect_solar_panels(
     _min_object_area = min_object_area if min_object_area is not None else MIN_OBJECT_AREA
     _confidence_threshold = confidence_threshold if confidence_threshold is not None else CONFIDENCE_THRESHOLD
     _mask_threshold = mask_threshold if mask_threshold is not None else MASK_THRESHOLD
+    _post_conf_threshold = (
+        post_conf_threshold if post_conf_threshold is not None else POST_CONF_THRESHOLD
+    )
     _output_dir = Path(output_dir) if output_dir else OUTPUT_DIR
     _masks_dir = _output_dir / "masks"
     _vectors_dir = _output_dir / "vectors"
@@ -390,7 +408,9 @@ def detect_solar_panels(
         min_object_area=_min_object_area,
         confidence_threshold=_confidence_threshold,
         mask_threshold=_mask_threshold,
+        post_conf_threshold=_post_conf_threshold,
         output_dir=_output_dir,
+        model_path=model_path,
     )
 
     _output_dir.mkdir(parents=True, exist_ok=True)
@@ -432,7 +452,11 @@ def detect_solar_panels(
         import geoai
 
         print(f"\n[路径 A] 使用 geoai.SolarPanelDetector 进行检测 (device={device})...")
-        detector = geoai.SolarPanelDetector(device=device)
+        detector_kwargs = {"device": device}
+        if model_path is not None:
+            detector_kwargs["model_path"] = model_path
+            print(f"[MODEL] 使用自定义模型权重: {model_path}")
+        detector = geoai.SolarPanelDetector(**detector_kwargs)
 
         # 预加载建筑轮廓（避免每个 tile 重复加载）
         bldg_union_cache = None
@@ -589,9 +613,9 @@ def detect_solar_panels(
 
         # 置信度过滤：去除低置信度预测
         pre_conf_count = len(pred_gdf)
-        pred_gdf = pred_gdf[pred_gdf["confidence"] >= POST_CONF_THRESHOLD].copy()
+        pred_gdf = pred_gdf[pred_gdf["confidence"] >= _post_conf_threshold].copy()
         print(f"置信度过滤: {len(pred_gdf)} / {pre_conf_count} 个多边形保留"
-              f"（confidence>={POST_CONF_THRESHOLD}）")
+              f"（confidence>={_post_conf_threshold}）")
 
         pred_gdf.to_file(str(_predictions_metric_path), driver="GPKG")
         export_gdf = to_export_crs(
@@ -1024,6 +1048,57 @@ def evaluate_per_tile(gt: gpd.GeoDataFrame,
     return df
 
 
+def evaluate_by_size(gt: gpd.GeoDataFrame,
+                     pred: gpd.GeoDataFrame,
+                     bins=None,
+                     labels=None) -> pd.DataFrame:
+    """
+    按 GT 面积分层评估，便于重点观察大面积面板在不同 IoU 阈值下的召回变化。
+    """
+    if bins is None:
+        bins = [0, 5, 20, 50, 100, float("inf")]
+    if labels is None:
+        labels = ["<5m2", "5-20m2", "20-50m2", "50-100m2", ">100m2"]
+
+    gt_metric = gt.to_crs(METRIC_CRS).copy()
+    gt_metric["area_m2"] = gt_metric.geometry.area
+    gt_metric["size_class"] = pd.cut(
+        gt_metric["area_m2"],
+        bins=bins,
+        labels=labels,
+        include_lowest=True,
+    )
+
+    rows = []
+    for iou_thr in IOU_THRESHOLDS:
+        metrics = iou_matching(gt_metric, pred, iou_threshold=iou_thr)
+        matched = gt_metric.index.isin(gt_metric.index[list(metrics["matched_gt_indices"])])
+        gt_metric["matched"] = matched
+
+        for size_class, subset in gt_metric.groupby("size_class", observed=False):
+            if len(subset) == 0:
+                continue
+            matched_count = int(subset["matched"].sum())
+            gt_count = int(len(subset))
+            fn_count = gt_count - matched_count
+            recall = matched_count / gt_count if gt_count > 0 else 0.0
+            rows.append({
+                "IoU_Threshold": iou_thr,
+                "size_class": str(size_class),
+                "gt_count": gt_count,
+                "matched_gt": matched_count,
+                "fn_count": fn_count,
+                "recall": round(recall, 4),
+                "mean_area_m2": round(float(subset["area_m2"].mean()), 2),
+                "median_area_m2": round(float(subset["area_m2"].median()), 2),
+            })
+
+    df = pd.DataFrame(rows)
+    df.to_csv(str(SIZE_STRATIFIED_CSV_PATH), index=False, encoding="utf-8-sig")
+    print(f"\n[OK] size-stratified evaluation saved: {SIZE_STRATIFIED_CSV_PATH}")
+    return df
+
+
 # ════════════════════════════════════════════════════════════════════════
 # 第五步：可视化
 # ════════════════════════════════════════════════════════════════════════
@@ -1353,6 +1428,17 @@ def parse_args():
         default=None,
         help="掩膜阈值",
     )
+    parser.add_argument(
+        "--post-conf-threshold",
+        type=float,
+        default=None,
+        help="后处理置信度阈值（基于 mask band2 回填值）",
+    )
+    parser.add_argument(
+        "--model-path",
+        default=None,
+        help="自定义模型权重路径（.pth），默认使用 geoai 内置权重",
+    )
     return parser.parse_args()
 
 
@@ -1363,7 +1449,9 @@ def main(force: bool = False,
          overlap: float | None = None,
          min_object_area: float | None = None,
          confidence_threshold: float | None = None,
-         mask_threshold: float | None = None):
+         mask_threshold: float | None = None,
+         post_conf_threshold: float | None = None,
+         model_path: str | None = None):
     set_grid_context(normalize_grid_id(grid_id), output_subdir=output_subdir)
 
     print("╔════════════════════════════════════════════════════════╗")
@@ -1381,7 +1469,9 @@ def main(force: bool = False,
         min_object_area=min_object_area,
         confidence_threshold=confidence_threshold,
         mask_threshold=mask_threshold,
+        post_conf_threshold=post_conf_threshold,
         output_dir=OUTPUT_DIR,
+        model_path=model_path,
     )
     if should_reuse_predictions(OUTPUT_DIR, detection_config, force=force):
         pred = load_predictions()
@@ -1392,7 +1482,9 @@ def main(force: bool = False,
             min_object_area=min_object_area,
             confidence_threshold=confidence_threshold,
             mask_threshold=mask_threshold,
+            post_conf_threshold=post_conf_threshold,
             output_dir=str(OUTPUT_DIR),
+            model_path=model_path,
         )
         pred = load_predictions()  # 重新加载以确保 CRS 统一
 
@@ -1431,6 +1523,14 @@ def main(force: bool = False,
             print(non_empty[["tile", "gt_count", "pred_count", "TP", "FP", "FN",
                              "precision", "recall", "f1"]].to_string(index=False))
 
+    print("\n" + "=" * 60)
+    print("按面积分层评估（重点关注大面积面板）...")
+    size_df = evaluate_by_size(gt, pred)
+    large_df = size_df[size_df["size_class"].isin(["50-100m2", ">100m2"])]
+    if len(large_df) > 0:
+        print("\n大面积面板召回（按 IoU 阈值）:")
+        print(large_df[["IoU_Threshold", "size_class", "gt_count", "matched_gt", "fn_count", "recall"]].to_string(index=False))
+
     # ── Step 6: 可视化（基于合并模式指标） ────────────────────────────
     print("\n" + "=" * 60)
     print("生成可视化图表...")
@@ -1456,6 +1556,8 @@ if __name__ == "__main__":
             min_object_area=args.min_object_area,
             confidence_threshold=args.confidence_threshold,
             mask_threshold=args.mask_threshold,
+            post_conf_threshold=args.post_conf_threshold,
+            model_path=args.model_path,
         )
     except RuntimeError as exc:
         print(f"[ERROR] {exc}")

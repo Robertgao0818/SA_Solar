@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
+import pandas as pd
 import geopandas as gpd
 
 BASE_DIR = Path(__file__).parent
+TILES_ROOT = Path(os.environ.get("SOLAR_TILES_ROOT", BASE_DIR / "tiles"))
 TASK_GRID_GPKG = BASE_DIR / "data" / "task_grid.gpkg"
+JHB_TASK_GRID_GPKG = BASE_DIR / "data" / "jhb_task_grid.gpkg"
 ANNOTATIONS_DIR = BASE_DIR / "data" / "annotations"
 COMBINED_ANNOTATION_GPKG = ANNOTATIONS_DIR / "solarpanel_g0001_g1190.gpkg"
 
@@ -49,7 +53,7 @@ def get_grid_paths(grid_id: str, output_subdir: str | None = None) -> GridPaths:
         output_dir = output_dir / output_subdir
     return GridPaths(
         grid_id=grid_id,
-        tiles_dir=BASE_DIR / "tiles" / grid_id,
+        tiles_dir=TILES_ROOT / grid_id,
         output_dir=output_dir,
         gt_gpkg=ANNOTATIONS_DIR / f"{grid_id}.gpkg",
         gt_geojson=ANNOTATIONS_DIR / f"{grid_id.lower()}.geojson",
@@ -57,9 +61,20 @@ def get_grid_paths(grid_id: str, output_subdir: str | None = None) -> GridPaths:
 
 
 def get_task_grid() -> gpd.GeoDataFrame:
-    if not TASK_GRID_GPKG.exists():
+    frames: list[gpd.GeoDataFrame] = []
+    if TASK_GRID_GPKG.exists():
+        frames.append(gpd.read_file(TASK_GRID_GPKG))
+    if JHB_TASK_GRID_GPKG.exists():
+        frames.append(gpd.read_file(JHB_TASK_GRID_GPKG))
+    if not frames:
         raise FileNotFoundError(f"task grid not found: {TASK_GRID_GPKG}")
-    return gpd.read_file(TASK_GRID_GPKG)
+    if len(frames) == 1:
+        return frames[0]
+    return gpd.GeoDataFrame(
+        pd.concat(frames, ignore_index=True),
+        geometry="geometry",
+        crs=frames[0].crs,
+    )
 
 
 def get_grid_record(grid_id: str):
@@ -95,10 +110,20 @@ def get_grid_spec(
     )
 
 
+def get_metric_crs(grid_id: str) -> str:
+    """Return a suitable UTM CRS for the given grid based on its centroid."""
+    record = get_grid_record(grid_id)
+    centroid = record.geometry.centroid
+    lon = float(centroid.x)
+    lat = float(centroid.y)
+    zone = int((lon + 180) // 6) + 1
+    epsg = 32700 + zone if lat < 0 else 32600 + zone
+    return f"EPSG:{epsg}"
+
+
 def get_tile_bounds(spec: GridSpec, col: int, row: int) -> tuple[float, float, float, float]:
     txmin = spec.xmin + col * spec.tile_size_deg
     txmax = min(txmin + spec.tile_size_deg, spec.xmax)
     tymax = spec.ymax - row * spec.tile_size_deg
     tymin = max(tymax - spec.tile_size_deg, spec.ymin)
     return txmin, tymin, txmax, tymax
-
