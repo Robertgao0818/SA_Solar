@@ -166,6 +166,7 @@ ptyprocess==0.7.0
 pure_eval==0.2.3
 pyarrow==23.0.1
 pycparser==3.0
+pycocotools==2.0.10
 pydantic==2.12.5
 pydantic_core==2.41.5
 Pygments==2.19.2

@@ -1,6 +1,7 @@
 # 底图 / 影像 tiles（太大，不同步）
-tiles/*.tif
-tiles/*.vrt
+tiles/
+GEE_tile/
+tiles_satellite_2025/
 
 # QGIS 项目文件
 *.qgz
@@ -14,9 +15,25 @@ tiles/*.vrt
 # 检测结果（可重新生成）
 results/
 
+# 模型权重（太大，不同步）
+checkpoints/
+*.pth
+
+# 训练数据（可重新生成）
+data/coco*/
+
 # 建筑轮廓数据（可重新生成）
 buildings.gpkg
 tile_manifest.csv
+
+# JHB 数据（太大，不同步）
+johnberg/
+
+# Claude Code plugin
+AGENTS.md
+
+# 个人文档
+progress.tex
 
 # Python
 __pycache__/

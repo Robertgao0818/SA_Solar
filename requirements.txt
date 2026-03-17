@@ -8,3 +8,8 @@ rasterio
 rasterstats
 osmnx
 requests
+torch
+torchvision
+huggingface_hub
+opencv-python-headless
+pycocotools

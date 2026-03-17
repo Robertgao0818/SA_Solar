@@ -48,6 +48,11 @@ modules = [
     "geoai",
     "osmnx",
     "requests",
+    "torch",
+    "torchvision",
+    "cv2",
+    "huggingface_hub",
+    "pycocotools",
 ]
 
 print(f"python={sys.executable}")
@@ -59,4 +64,10 @@ for name in modules:
     mod = importlib.import_module(name)
     version = getattr(mod, "__version__", "unknown")
     print(f"{name}={version}")
+
+import torch
+print(f"cuda_available={torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"cuda_device_count={torch.cuda.device_count()}")
+    print(f"cuda_device_0={torch.cuda.get_device_name(0)}")
 PY

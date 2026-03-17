@@ -108,6 +108,9 @@ def set_grid_context(grid_id: str = DEFAULT_GRID_ID,
     global SIZE_STRATIFIED_CSV_PATH
     global ERROR_ANALYSIS_PATH
     global FN_ANALYSIS_PATH
+    global PRESENCE_METRICS_PATH
+    global FOOTPRINT_METRICS_PATH
+    global AREA_ERROR_METRICS_PATH
 
     paths = get_grid_paths(grid_id, output_subdir=output_subdir)
     GRID_ID = paths.grid_id
@@ -128,6 +131,9 @@ def set_grid_context(grid_id: str = DEFAULT_GRID_ID,
     SIZE_STRATIFIED_CSV_PATH = OUTPUT_DIR / "size_stratified_metrics.csv"
     ERROR_ANALYSIS_PATH = OUTPUT_DIR / "error_analysis.csv"
     FN_ANALYSIS_PATH = OUTPUT_DIR / "fn_analysis.csv"
+    PRESENCE_METRICS_PATH = OUTPUT_DIR / "presence_metrics.csv"
+    FOOTPRINT_METRICS_PATH = OUTPUT_DIR / "footprint_metrics.csv"
+    AREA_ERROR_METRICS_PATH = OUTPUT_DIR / "area_error_metrics.csv"
 
 
 set_grid_context(DEFAULT_GRID_ID)
@@ -230,6 +236,7 @@ def write_run_config(
     config: dict,
     *,
     result_count: int | None = None,
+    evaluation_config: dict | None = None,
 ) -> None:
     """将当前实验配置写入 config.json。"""
     payload = {
@@ -242,6 +249,8 @@ def write_run_config(
     }
     if result_count is not None:
         payload["result_count"] = int(result_count)
+    if evaluation_config is not None:
+        payload["evaluation_config"] = evaluation_config
     config_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -256,6 +265,18 @@ def load_run_config(config_path: Path) -> dict | None:
         return json.loads(config_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
+
+
+def append_evaluation_config(config_path: Path, evaluation_config: dict) -> None:
+    """Append evaluation_config to existing config.json (non-destructive)."""
+    payload = load_run_config(config_path)
+    if payload is None:
+        return
+    payload["evaluation_config"] = evaluation_config
+    config_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def prepare_geoai_input_raster(tif_path: Path, scratch_dir: Path) -> Path:
@@ -822,6 +843,7 @@ def iou_matching(gt: gpd.GeoDataFrame,
                  pred: gpd.GeoDataFrame,
                  iou_threshold: float = 0.3,
                  merge_preds: bool = True,
+                 return_match_details: bool = False,
                  ) -> dict:
     """
     基于空间 IoU 的匹配，支持两种模式：
@@ -833,6 +855,9 @@ def iou_matching(gt: gpd.GeoDataFrame,
       对每个 GT 多边形，将所有与之相交的预测多边形 union 合并后再计算 IoU。
       适用于标注者用一个大多边形覆盖屋顶上多组面板，而检测器将其拆分为
       多个小多边形的情况。
+
+    return_match_details=True 时额外返回 "match_details" 列表，每个元素为:
+      {"gt_idx", "pred_indices", "iou", "intersection_area", "gt_area", "pred_area"}
 
     返回:
       {
@@ -847,11 +872,12 @@ def iou_matching(gt: gpd.GeoDataFrame,
     matched_pred = set()
     matched_gt = set()
     iou_scores = []
+    match_details = [] if return_match_details else None
 
     if merge_preds:
         # ── 多对一合并模式 ────────────────────────────────────────────
         # 对每个 GT，找出所有与之相交的 pred，合并后计算 IoU
-        gt_match_results = []  # (gt_idx, merged_iou, pred_indices_set)
+        gt_match_results = []  # (gt_idx, merged_iou, pred_indices_set, gt_geom, merged_pred_geom)
 
         for gt_idx, gt_row in gt.iterrows():
             gt_geom = gt_row.geometry
@@ -879,13 +905,13 @@ def iou_matching(gt: gpd.GeoDataFrame,
             iou_val = compute_iou(gt_geom, merged_pred_geom)
             if iou_val >= iou_threshold:
                 gt_match_results.append(
-                    (gt_idx, iou_val, set(intersecting_idxs))
+                    (gt_idx, iou_val, set(intersecting_idxs), gt_geom, merged_pred_geom)
                 )
 
         # 按 IoU 降序处理（贪心），避免 pred 被重复分配
         gt_match_results.sort(key=lambda x: x[1], reverse=True)
 
-        for gt_idx, iou_val, pidx_set in gt_match_results:
+        for gt_idx, iou_val, pidx_set, gt_geom, merged_pred_geom in gt_match_results:
             if gt_idx in matched_gt:
                 continue
             # 检查是否有至少一个 pred 尚未被分配
@@ -895,6 +921,19 @@ def iou_matching(gt: gpd.GeoDataFrame,
             matched_gt.add(gt_idx)
             matched_pred.update(pidx_set)  # 所有参与合并的 pred 都标记为已匹配
             iou_scores.append(iou_val)
+            if return_match_details:
+                try:
+                    inter_area = gt_geom.intersection(merged_pred_geom).area
+                except Exception:
+                    inter_area = 0.0
+                match_details.append({
+                    "gt_idx": gt_idx,
+                    "pred_indices": pidx_set,
+                    "iou": iou_val,
+                    "intersection_area": inter_area,
+                    "gt_area": gt_geom.area,
+                    "pred_area": merged_pred_geom.area,
+                })
 
     else:
         # ── 严格一对一模式 ────────────────────────────────────────────
@@ -916,6 +955,21 @@ def iou_matching(gt: gpd.GeoDataFrame,
                 matched_gt.add(gt_idx)
                 matched_pred.add(pred_idx)
                 iou_scores.append(iou_val)
+                if return_match_details:
+                    gt_geom = gt.loc[gt_idx].geometry
+                    pred_geom = pred.iloc[pred_idx].geometry
+                    try:
+                        inter_area = gt_geom.intersection(pred_geom).area
+                    except Exception:
+                        inter_area = 0.0
+                    match_details.append({
+                        "gt_idx": gt_idx,
+                        "pred_indices": {pred_idx},
+                        "iou": iou_val,
+                        "intersection_area": inter_area,
+                        "gt_area": gt_geom.area,
+                        "pred_area": pred_geom.area,
+                    })
 
     tp = len(matched_gt)
     fn = len(gt) - tp
@@ -925,13 +979,16 @@ def iou_matching(gt: gpd.GeoDataFrame,
     recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     f1        = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
 
-    return {
+    result = {
         "tp": tp, "fp": fp, "fn": fn,
         "precision": precision, "recall": recall, "f1": f1,
         "matched_pred_indices": matched_pred,
         "matched_gt_indices": matched_gt,
         "iou_scores": iou_scores,
     }
+    if return_match_details:
+        result["match_details"] = match_details
+    return result
 
 
 def evaluate_at_multiple_thresholds(gt: gpd.GeoDataFrame,
@@ -1072,7 +1129,7 @@ def evaluate_by_size(gt: gpd.GeoDataFrame,
     rows = []
     for iou_thr in IOU_THRESHOLDS:
         metrics = iou_matching(gt_metric, pred, iou_threshold=iou_thr)
-        matched = gt_metric.index.isin(gt_metric.index[list(metrics["matched_gt_indices"])])
+        matched = gt_metric.index.isin(list(metrics["matched_gt_indices"]))
         gt_metric["matched"] = matched
 
         for size_class, subset in gt_metric.groupby("size_class", observed=False):
@@ -1228,6 +1285,147 @@ def plot_iou_threshold_metrics(metrics_df: pd.DataFrame):
 
 
 # ════════════════════════════════════════════════════════════════════════
+# Installation-level evaluation profile (V1.2)
+# ════════════════════════════════════════════════════════════════════════
+
+def evaluate_presence(matching_result: dict,
+                      grid_id: str,
+                      output_dir: Path) -> pd.DataFrame:
+    """Installation-level presence metrics (merge, IoU>=0.1).
+
+    Writes presence_metrics.csv with one row.
+    """
+    row = {
+        "grid_id": grid_id,
+        "gt_count": matching_result["tp"] + matching_result["fn"],
+        "pred_count": matching_result["tp"] + matching_result["fp"],
+        "tp": matching_result["tp"],
+        "fp": matching_result["fp"],
+        "fn": matching_result["fn"],
+        "precision": matching_result["precision"],
+        "recall": matching_result["recall"],
+        "f1": matching_result["f1"],
+    }
+    df = pd.DataFrame([row])
+    csv_path = output_dir / "presence_metrics.csv"
+    df.to_csv(csv_path, index=False)
+    print(f"\n[INSTALL] Presence metrics → {csv_path}")
+    print(f"  P={row['precision']:.4f}  R={row['recall']:.4f}  F1={row['f1']:.4f}")
+    return df
+
+
+def evaluate_footprint(matching_result: dict,
+                       output_dir: Path) -> pd.DataFrame:
+    """Footprint quality metrics: IoU and Dice distributions for matched pairs.
+
+    Writes footprint_metrics.csv with summary statistics.
+    """
+    details = matching_result.get("match_details", [])
+    if not details:
+        print("\n[INSTALL] Footprint metrics: no matches to evaluate")
+        empty = pd.DataFrame([{
+            "n_matches": 0, "mean_iou": 0, "median_iou": 0,
+            "p25_iou": 0, "p75_iou": 0,
+            "iou_ge_0.3_rate": 0, "iou_ge_0.5_rate": 0,
+            "mean_dice": 0, "median_dice": 0,
+        }])
+        csv_path = output_dir / "footprint_metrics.csv"
+        empty.to_csv(csv_path, index=False)
+        return empty
+
+    ious = []
+    dices = []
+    for d in details:
+        ious.append(d["iou"])
+        denom = d["gt_area"] + d["pred_area"]
+        dice = 2 * d["intersection_area"] / denom if denom > 0 else 0.0
+        dices.append(dice)
+
+    ious_arr = np.array(ious)
+    dices_arr = np.array(dices)
+
+    row = {
+        "n_matches": len(ious),
+        "mean_iou": float(ious_arr.mean()),
+        "median_iou": float(np.median(ious_arr)),
+        "p25_iou": float(np.percentile(ious_arr, 25)),
+        "p75_iou": float(np.percentile(ious_arr, 75)),
+        "iou_ge_0.3_rate": float((ious_arr >= 0.3).mean()),
+        "iou_ge_0.5_rate": float((ious_arr >= 0.5).mean()),
+        "mean_dice": float(dices_arr.mean()),
+        "median_dice": float(np.median(dices_arr)),
+    }
+    df = pd.DataFrame([row])
+    csv_path = output_dir / "footprint_metrics.csv"
+    df.to_csv(csv_path, index=False)
+    print(f"\n[INSTALL] Footprint metrics → {csv_path}")
+    print(f"  IoU: mean={row['mean_iou']:.3f} median={row['median_iou']:.3f}"
+          f"  @0.3={row['iou_ge_0.3_rate']:.1%} @0.5={row['iou_ge_0.5_rate']:.1%}")
+    print(f"  Dice: mean={row['mean_dice']:.3f} median={row['median_dice']:.3f}")
+    return df
+
+
+def evaluate_area_error(matching_result: dict,
+                        gt: gpd.GeoDataFrame,
+                        output_dir: Path) -> pd.DataFrame:
+    """Per-match area error bucketed by GT area size class.
+
+    Writes area_error_metrics.csv.
+    """
+    details = matching_result.get("match_details", [])
+    if not details:
+        print("\n[INSTALL] Area error metrics: no matches to evaluate")
+        csv_path = output_dir / "area_error_metrics.csv"
+        pd.DataFrame().to_csv(csv_path, index=False)
+        return pd.DataFrame()
+
+    records = []
+    for d in details:
+        gt_area = d["gt_area"]
+        pred_area = d["pred_area"]
+        abs_err = pred_area - gt_area
+        rel_err = abs_err / gt_area if gt_area > 0 else 0.0
+        records.append({
+            "gt_area_m2": gt_area,
+            "pred_area_m2": pred_area,
+            "abs_error_m2": abs_err,
+            "rel_error": rel_err,
+        })
+
+    match_df = pd.DataFrame(records)
+
+    bins = [0, 5, 20, 50, 100, float("inf")]
+    labels = ["<5m2", "5-20m2", "20-50m2", "50-100m2", ">100m2"]
+    match_df["size_class"] = pd.cut(
+        match_df["gt_area_m2"], bins=bins, labels=labels, right=False
+    )
+
+    rows = []
+    for sc in labels:
+        subset = match_df[match_df["size_class"] == sc]
+        if len(subset) == 0:
+            continue
+        rows.append({
+            "size_class": sc,
+            "n_matches": len(subset),
+            "mean_abs_error_m2": float(subset["abs_error_m2"].mean()),
+            "median_abs_error_m2": float(subset["abs_error_m2"].median()),
+            "mean_rel_error": float(subset["rel_error"].mean()),
+            "median_rel_error": float(subset["rel_error"].median()),
+        })
+
+    result_df = pd.DataFrame(rows)
+    csv_path = output_dir / "area_error_metrics.csv"
+    result_df.to_csv(csv_path, index=False)
+    print(f"\n[INSTALL] Area error metrics → {csv_path}")
+    for _, r in result_df.iterrows():
+        print(f"  {r['size_class']:>10s}: n={int(r['n_matches']):3d}"
+              f"  abs_err={r['mean_abs_error_m2']:+.1f}m²"
+              f"  rel_err={r['mean_rel_error']:+.1%}")
+    return result_df
+
+
+# ════════════════════════════════════════════════════════════════════════
 # 误检/漏检分类分析
 # ════════════════════════════════════════════════════════════════════════
 ERROR_ANALYSIS_PATH = OUTPUT_DIR / "error_analysis.csv"
@@ -1316,7 +1514,8 @@ def analyze_errors(gt: gpd.GeoDataFrame,
 def print_report(gt: gpd.GeoDataFrame,
                  pred: gpd.GeoDataFrame,
                  pred_classified: gpd.GeoDataFrame,
-                 metrics_df: pd.DataFrame):
+                 metrics_df: pd.DataFrame,
+                 evaluation_profile: str = "installation"):
     """输出格式化评估报告"""
 
     default_metrics = iou_matching(gt, pred, iou_threshold=DEFAULT_IOU)
@@ -1366,6 +1565,57 @@ confidence stats (IoU={DEFAULT_IOU}):
   - {PR_CURVE_PATH}
   - {IOU_METRICS_PATH}
   - {EVALUATION_CSV_PATH}
+"""
+
+    if evaluation_profile == "installation":
+        # Append installation-level metrics summary
+        presence_csv = OUTPUT_DIR / "presence_metrics.csv"
+        footprint_csv = OUTPUT_DIR / "footprint_metrics.csv"
+        area_csv = OUTPUT_DIR / "area_error_metrics.csv"
+
+        report += f"""
+{'─' * 50}
+Installation Profile (V1.2):
+  evaluation_profile : installation
+  label_definition   : installation_footprint"""
+
+        if presence_csv.exists():
+            pres_df = pd.read_csv(presence_csv)
+            if len(pres_df) > 0:
+                r = pres_df.iloc[0]
+                report += f"""
+  ── Presence (merge, IoU>=0.1) ──
+    Precision       : {r['precision']:.4f}
+    Recall          : {r['recall']:.4f}
+    F1              : {r['f1']:.4f}"""
+
+        if footprint_csv.exists():
+            fp_df = pd.read_csv(footprint_csv)
+            if len(fp_df) > 0 and fp_df.iloc[0].get("n_matches", 0) > 0:
+                r = fp_df.iloc[0]
+                report += f"""
+  ── Footprint Quality ──
+    mean IoU        : {r['mean_iou']:.4f}
+    median IoU      : {r['median_iou']:.4f}
+    IoU>=0.3 rate   : {r['iou_ge_0.3_rate']:.1%}
+    IoU>=0.5 rate   : {r['iou_ge_0.5_rate']:.1%}
+    mean Dice       : {r['mean_dice']:.4f}"""
+
+        if area_csv.exists():
+            area_df = pd.read_csv(area_csv)
+            if len(area_df) > 0:
+                report += f"""
+  ── Area Error (by size class) ──"""
+                for _, r in area_df.iterrows():
+                    report += f"""
+    {r['size_class']:>10s}: n={int(r['n_matches']):3d}  abs={r['mean_abs_error_m2']:+.1f}m²  rel={r['mean_rel_error']:+.1%}"""
+
+        report += f"""
+  ── Installation Metric Files ──
+    - {presence_csv}
+    - {footprint_csv}
+    - {area_csv}
+{'=' * 50}
 """
 
     print(report)
@@ -1439,6 +1689,18 @@ def parse_args():
         default=None,
         help="自定义模型权重路径（.pth），默认使用 geoai 内置权重",
     )
+    parser.add_argument(
+        "--evaluation-profile",
+        choices=["installation", "legacy_instance"],
+        default="installation",
+        help="评估模式: installation (V1.2三层指标) 或 legacy_instance (旧版兼容)",
+    )
+    parser.add_argument(
+        "--data-scope",
+        choices=["val_tiles", "full_grid", "cross_city"],
+        default="full_grid",
+        help="数据范围标签，记录到 config.json",
+    )
     return parser.parse_args()
 
 
@@ -1451,7 +1713,9 @@ def main(force: bool = False,
          confidence_threshold: float | None = None,
          mask_threshold: float | None = None,
          post_conf_threshold: float | None = None,
-         model_path: str | None = None):
+         model_path: str | None = None,
+         evaluation_profile: str = "installation",
+         data_scope: str = "full_grid"):
     set_grid_context(normalize_grid_id(grid_id), output_subdir=output_subdir)
 
     print("╔════════════════════════════════════════════════════════╗")
@@ -1460,6 +1724,7 @@ def main(force: bool = False,
     print("╚════════════════════════════════════════════════════════╝\n")
     print(f"[GRID] {GRID_ID}")
     print(f"[OUT ] {OUTPUT_DIR}")
+    print(f"[EVAL] profile={evaluation_profile}, scope={data_scope}")
 
     # ── Step 1: 检测 ──────────────────────────────────────────────────
     detect_chip_size = (chip_size, chip_size) if chip_size is not None else None
@@ -1531,6 +1796,18 @@ def main(force: bool = False,
         print("\n大面积面板召回（按 IoU 阈值）:")
         print(large_df[["IoU_Threshold", "size_class", "gt_count", "matched_gt", "fn_count", "recall"]].to_string(index=False))
 
+    # ── Step 5b: Installation-level 三层评估 (V1.2) ────────────────────
+    if evaluation_profile == "installation":
+        print("\n" + "=" * 60)
+        print("Installation-level 三层评估 (presence / footprint / area)...")
+        install_match = iou_matching(
+            gt, pred, iou_threshold=0.1, merge_preds=True,
+            return_match_details=True,
+        )
+        evaluate_presence(install_match, GRID_ID, OUTPUT_DIR)
+        evaluate_footprint(install_match, OUTPUT_DIR)
+        evaluate_area_error(install_match, gt, OUTPUT_DIR)
+
     # ── Step 6: 可视化（基于合并模式指标） ────────────────────────────
     print("\n" + "=" * 60)
     print("生成可视化图表...")
@@ -1539,7 +1816,15 @@ def main(force: bool = False,
     plot_iou_threshold_metrics(metrics_df)
 
     # ── Step 7: 最终报告 ──────────────────────────────────────────────
-    print_report(gt, pred, pred_classified, metrics_df)
+    print_report(gt, pred, pred_classified, metrics_df, evaluation_profile)
+
+    # ── Step 8: 追加 evaluation_config 到 config.json ────────────────
+    append_evaluation_config(CONFIG_PATH, {
+        "evaluation_profile": evaluation_profile,
+        "label_definition": "installation_footprint",
+        "data_scope": data_scope,
+        "annotation_tier_mix": "T1+T2",
+    })
 
     print("\n[DONE] Pipeline finished!")
 
@@ -1558,6 +1843,8 @@ if __name__ == "__main__":
             mask_threshold=args.mask_threshold,
             post_conf_threshold=args.post_conf_threshold,
             model_path=args.model_path,
+            evaluation_profile=args.evaluation_profile,
+            data_scope=args.data_scope,
         )
     except RuntimeError as exc:
         print(f"[ERROR] {exc}")

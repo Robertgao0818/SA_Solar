@@ -2,6 +2,8 @@
 
 所有人工标注均为弱监督标注（weak supervision）。
 
+V1.2 起，标注任务正式定义为 **installation footprint**（安装级轮廓）。详见 [ANNOTATION_SPEC.md](ANNOTATION_SPEC.md)。
+
 ## 数据集
 
 | 文件 | 来源 | Grid 范围 | 状态 |
@@ -12,6 +14,16 @@
 ## 标注规范
 
 - 坐标系：EPSG:4326 (WGS84)
-- 标注对象：屋顶太阳能板轮廓（polygon）
+- 标注对象：屋顶太阳能安装轮廓（polygon），一个 polygon = 一个 installation footprint
 - 质量级别：弱监督（人工标注，未经交叉验证）
 - 项目约定：标注文件保持 `EPSG:4326`，进入检测/评估脚本后统一重投影到 `EPSG:32734` 做米制计算
+
+## 质量分层 (V1.2)
+
+| Tier | 含义 | 用途 |
+|------|------|------|
+| T1 | 已按 ANNOTATION_SPEC.md 审查，几何精度满足 IoU>=0.3 | 验证集；所有评估结论 |
+| T2 | 原始弱监督标注，未审查 | 训练集（与 T1 合用） |
+
+标注 manifest: `annotation_manifest.csv` — 每个标注一行，记录 grid_id、quality_tier、review_status 等。
+使用 `scripts/bootstrap_manifest.py` 初始化。

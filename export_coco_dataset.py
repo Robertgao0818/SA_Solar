@@ -170,7 +170,8 @@ def polygon_to_coco_segmentation(pixel_poly) -> list[list[float]]:
     # exterior ring
     coords = list(pixel_poly.exterior.coords)
     flat = []
-    for x, y in coords:
+    for coord in coords:
+        x, y = coord[:2]
         flat.extend([round(float(x), 2), round(float(y), 2)])
     if len(flat) >= 6:
         segments.append(flat)
@@ -178,7 +179,8 @@ def polygon_to_coco_segmentation(pixel_poly) -> list[list[float]]:
     for interior in pixel_poly.interiors:
         coords = list(interior.coords)
         flat = []
-        for x, y in coords:
+        for coord in coords:
+            x, y = coord[:2]
             flat.extend([round(float(x), 2), round(float(y), 2)])
         if len(flat) >= 6:
             segments.append(flat)
@@ -265,16 +267,13 @@ def extract_chips_from_tile(
                 chip_path.parent.mkdir(parents=True, exist_ok=True)
 
                 profile = src.profile.copy()
+                for key in ("photometric", "compress", "jpeg_quality", "jpegtablesmode"):
+                    profile.pop(key, None)
                 profile.update(
+                    driver="GTiff",
                     width=chip_size,
                     height=chip_size,
-                    transform=rasterio.transform.from_bounds(
-                        *rasterio.transform.array_bounds(chip_size, chip_size,
-                            rasterio.transform.from_bounds(
-                                src.bounds.left, src.bounds.bottom,
-                                src.bounds.right, src.bounds.top,
-                                src.width, src.height)),
-                        chip_size, chip_size),
+                    transform=src.window_transform(window),
                     compress="lzw",
                 )
                 with rasterio.open(str(chip_path), "w", **profile) as dst:
@@ -356,7 +355,8 @@ def balance_chips(
     return images_out, annots_out, prov_out
 
 
-def build_coco_json(images: list[dict], annotations: list[dict], split: str) -> dict:
+def build_coco_json(images: list[dict], annotations: list[dict], split: str,
+                    category_name: str = "solar_panel") -> dict:
     """Build COCO-format JSON dict."""
     return {
         "info": {
@@ -367,7 +367,7 @@ def build_coco_json(images: list[dict], annotations: list[dict], split: str) -> 
         },
         "licenses": [],
         "categories": [
-            {"id": 1, "name": "solar_panel", "supercategory": "object"}
+            {"id": 1, "name": category_name, "supercategory": "object"}
         ],
         "images": images,
         "annotations": annotations,
@@ -393,6 +393,18 @@ def main():
         "--no-balance", action="store_true",
         help="Skip 1:1 positive:negative balancing",
     )
+    parser.add_argument(
+        "--manifest", type=str, default=None,
+        help="Path to annotation_manifest.csv for quality tier filtering",
+    )
+    parser.add_argument(
+        "--tier-filter", choices=["T1", "T2", "T1+T2"], default="T1+T2",
+        help="Quality tier filter: T1, T2, or T1+T2 (default: T1+T2, use all)",
+    )
+    parser.add_argument(
+        "--category-name", default="solar_panel",
+        help="COCO category name (default: solar_panel)",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -400,6 +412,39 @@ def main():
 
     # ── Load annotations ──────────────────────────────────────────────
     grid_annotations = load_annotations()
+
+    # ── Manifest-based tier filtering ──────────────────────────────────
+    manifest_path = Path(args.manifest) if args.manifest else None
+    if manifest_path and manifest_path.exists() and args.tier_filter != "T1+T2":
+        import csv as csv_mod
+        with open(manifest_path, encoding="utf-8") as f:
+            manifest_rows = list(csv_mod.DictReader(f))
+
+        # Build set of (grid_id, row_index) to keep
+        allowed_tiers = set(args.tier_filter.split("+"))
+        keep_set: dict[str, set[int]] = {}
+        for row in manifest_rows:
+            if row["quality_tier"] in allowed_tiers:
+                gid = row["grid_id"]
+                # annotation_id format: {grid_id}_{idx:03d}
+                idx = int(row["annotation_id"].split("_")[-1])
+                keep_set.setdefault(gid, set()).add(idx)
+
+        for gid in list(grid_annotations.keys()):
+            if gid in keep_set:
+                mask = grid_annotations[gid].index.isin(keep_set[gid])
+                before = len(grid_annotations[gid])
+                grid_annotations[gid] = grid_annotations[gid][mask].reset_index(drop=True)
+                after = len(grid_annotations[gid])
+                print(f"[TIER] {gid}: {before} → {after} (tier={args.tier_filter})")
+                if after == 0:
+                    print(f"[WARN] {gid} has 0 annotations after tier filter, skipping")
+                    del grid_annotations[gid]
+            else:
+                print(f"[WARN] {gid} not in manifest, removing")
+                del grid_annotations[gid]
+    elif manifest_path and manifest_path.exists():
+        print(f"[TIER] Using all tiers (T1+T2), manifest loaded: {manifest_path}")
 
     # ── Per-grid tile split ───────────────────────────────────────────
     all_train_stems = set()
@@ -486,7 +531,8 @@ def main():
                   f"({n_pos2} positive, {n_neg2} negative)")
 
         # Write COCO JSON
-        coco = build_coco_json(all_images, all_annots, split_name)
+        coco = build_coco_json(all_images, all_annots, split_name,
+                              category_name=args.category_name)
         json_path = output_dir / f"{split_name}.json"
         json_path.write_text(
             json.dumps(coco, indent=2) + "\n", encoding="utf-8"

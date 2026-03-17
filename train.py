@@ -16,18 +16,13 @@ Requires CUDA GPU.
 
 import argparse
 import json
-import math
-import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.utils.data
-import torchvision
 from torchvision.models.detection import maskrcnn_resnet50_fpn
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 
 assert torch.cuda.is_available(), (
     "CUDA is required for training. WSL2 does not currently expose CUDA to PyTorch. "
@@ -321,9 +316,20 @@ def evaluate_coco(model, data_loader, device):
     model.eval()
 
     coco_results = []
-    coco_gt_data = {"images": [], "annotations": [], "categories": [
-        {"id": 1, "name": "solar_panel"}
-    ]}
+    coco_gt_data = {
+        "info": {
+            "description": "Cape Town Solar Panel Detection - validation eval",
+            "version": "1.0",
+        },
+        "licenses": [],
+        "images": [],
+        "annotations": [],
+        "categories": [
+            # Works with both "solar_panel" and "solar_installation" COCO datasets;
+            # pycocotools matches by category_id, not name.
+            {"id": 1, "name": "solar_panel"}
+        ],
+    }
     ann_id = 1
 
     for images, targets in data_loader:
@@ -416,13 +422,8 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, lr_scheduler=N
         images = [img.to(device) for img in images]
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        # Skip batches with no boxes (Mask R-CNN requires at least one box)
-        valid_targets = [t for t in targets if t["boxes"].numel() > 0]
-        valid_images = [img for img, t in zip(images, targets) if t["boxes"].numel() > 0]
-        if not valid_targets:
-            continue
-
-        loss_dict = model(valid_images, valid_targets)
+        # Keep empty-target images in training so the model learns true negatives.
+        loss_dict = model(images, targets)
         losses = sum(loss for loss in loss_dict.values())
 
         optimizer.zero_grad()
