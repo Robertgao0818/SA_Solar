@@ -32,7 +32,7 @@ import seaborn as sns
 from shapely.geometry import box
 from shapely.ops import unary_union
 
-from grid_utils import (
+from core.grid_utils import (
     COMBINED_ANNOTATION_GPKG,
     DEFAULT_GRID_ID,
     get_metric_crs,
@@ -58,8 +58,8 @@ BUILDINGS_GPKG = BASE_DIR / "buildings.gpkg"
 # geoai 检测参数
 CONFIDENCE_THRESHOLD = 0.3
 MASK_THRESHOLD       = 0.3
-MIN_OBJECT_AREA      = 2      # 后处理面积过滤（m²），<2m² 几乎全是碎片
-MAX_ELONGATION       = 4.0    # 后处理长宽比过滤，>4 几乎全是误检
+MIN_OBJECT_AREA      = 5      # 后处理面积过滤（m²），<5m² 几乎全是碎片
+MAX_ELONGATION       = 8.0    # 后处理长宽比过滤（V1.2 校准后从 4.0 放宽）
 MIN_SOLIDITY         = 0.0    # 暂不限制 solidity（TP/FP 分布重叠太大）
 SHADOW_RGB_THRESH    = 60     # RGB 三通道均 < 此值视为阴影
 POST_CONF_THRESHOLD  = 0.70   # 后处理置信度过滤（基于 mask band2 回填值）
@@ -195,6 +195,7 @@ def build_detection_config(
     confidence_threshold=None,
     mask_threshold=None,
     post_conf_threshold=None,
+    max_elongation=None,
     output_dir=None,
     model_path=None,
 ) -> dict:
@@ -221,7 +222,9 @@ def build_detection_config(
             post_conf_threshold
             if post_conf_threshold is not None else POST_CONF_THRESHOLD
         ),
-        "max_elongation": MAX_ELONGATION,
+        "max_elongation": (
+            max_elongation if max_elongation is not None else MAX_ELONGATION
+        ),
         "min_solidity": MIN_SOLIDITY,
         "shadow_rgb_thresh": SHADOW_RGB_THRESH,
         "batch_size": BATCH_SIZE,
@@ -401,6 +404,7 @@ def detect_solar_panels(
     confidence_threshold=None,
     mask_threshold=None,
     post_conf_threshold=None,
+    max_elongation=None,
     output_dir=None,
     save_config=True,
     model_path=None,
@@ -417,6 +421,7 @@ def detect_solar_panels(
     _post_conf_threshold = (
         post_conf_threshold if post_conf_threshold is not None else POST_CONF_THRESHOLD
     )
+    _max_elongation = max_elongation if max_elongation is not None else MAX_ELONGATION
     _output_dir = Path(output_dir) if output_dir else OUTPUT_DIR
     _masks_dir = _output_dir / "masks"
     _vectors_dir = _output_dir / "vectors"
@@ -430,6 +435,7 @@ def detect_solar_panels(
         confidence_threshold=_confidence_threshold,
         mask_threshold=_mask_threshold,
         post_conf_threshold=_post_conf_threshold,
+        max_elongation=_max_elongation,
         output_dir=_output_dir,
         model_path=model_path,
     )
@@ -614,12 +620,12 @@ def detect_solar_panels(
             pred_gdf = pred_gdf[pred_gdf["area_m2"] >= _min_object_area].copy()
 
         # 长宽比过滤：去除细长条状误检
-        if "elongation" in pred_gdf.columns and MAX_ELONGATION < 999:
-            pred_gdf = pred_gdf[pred_gdf["elongation"] <= MAX_ELONGATION].copy()
+        if "elongation" in pred_gdf.columns and _max_elongation < 999:
+            pred_gdf = pred_gdf[pred_gdf["elongation"] <= _max_elongation].copy()
 
         post_filter_count = len(pred_gdf)
         print(f"\n后处理过滤: {post_filter_count} / {pre_filter_count} 个多边形保留"
-              f"（area>={_min_object_area}m² + elongation<={MAX_ELONGATION}）")
+              f"（area>={_min_object_area}m² + elongation<={_max_elongation}）")
 
         # 确保有 confidence 字段
         if "confidence" not in pred_gdf.columns:
@@ -1685,6 +1691,12 @@ def parse_args():
         help="后处理置信度阈值（基于 mask band2 回填值）",
     )
     parser.add_argument(
+        "--max-elongation",
+        type=float,
+        default=None,
+        help="后处理长宽比上限，超过此值的预测被过滤",
+    )
+    parser.add_argument(
         "--model-path",
         default=None,
         help="自定义模型权重路径（.pth），默认使用 geoai 内置权重",
@@ -1713,6 +1725,7 @@ def main(force: bool = False,
          confidence_threshold: float | None = None,
          mask_threshold: float | None = None,
          post_conf_threshold: float | None = None,
+         max_elongation: float | None = None,
          model_path: str | None = None,
          evaluation_profile: str = "installation",
          data_scope: str = "full_grid"):
@@ -1735,6 +1748,7 @@ def main(force: bool = False,
         confidence_threshold=confidence_threshold,
         mask_threshold=mask_threshold,
         post_conf_threshold=post_conf_threshold,
+        max_elongation=max_elongation,
         output_dir=OUTPUT_DIR,
         model_path=model_path,
     )
@@ -1748,6 +1762,7 @@ def main(force: bool = False,
             confidence_threshold=confidence_threshold,
             mask_threshold=mask_threshold,
             post_conf_threshold=post_conf_threshold,
+            max_elongation=max_elongation,
             output_dir=str(OUTPUT_DIR),
             model_path=model_path,
         )
@@ -1842,6 +1857,7 @@ if __name__ == "__main__":
             confidence_threshold=args.confidence_threshold,
             mask_threshold=args.mask_threshold,
             post_conf_threshold=args.post_conf_threshold,
+            max_elongation=args.max_elongation,
             model_path=args.model_path,
             evaluation_profile=args.evaluation_profile,
             data_scope=args.data_scope,

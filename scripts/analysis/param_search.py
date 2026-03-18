@@ -18,8 +18,12 @@ import time
 
 import pandas as pd
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
 import detect_and_evaluate as pipeline
-from grid_utils import DEFAULT_GRID_ID, normalize_grid_id
+from core.grid_utils import DEFAULT_GRID_ID, normalize_grid_id
 
 # ════════════════════════════════════════════════════════════════════════
 # 搜索空间

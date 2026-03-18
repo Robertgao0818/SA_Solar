@@ -24,13 +24,17 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
 import detect_and_evaluate as pipeline
-from grid_utils import normalize_grid_id
+from core.grid_utils import normalize_grid_id
 
 # ════════════════════════════════════════════════════════════════════════
 # 常量
 # ════════════════════════════════════════════════════════════════════════
-BASE_DIR = Path(__file__).parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 GRIDS = ["G1189", "G1190", "G1238"]
 SWEEP_DIR = BASE_DIR / "results" / "calibration_sweep"
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import geopandas as gpd
 
-BASE_DIR = Path(__file__).parent
+BASE_DIR = Path(__file__).parent.parent
 TILES_ROOT = Path(os.environ.get("SOLAR_TILES_ROOT", BASE_DIR / "tiles"))
 TASK_GRID_GPKG = BASE_DIR / "data" / "task_grid.gpkg"
 JHB_TASK_GRID_GPKG = BASE_DIR / "data" / "jhb_task_grid.gpkg"

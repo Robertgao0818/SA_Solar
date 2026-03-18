@@ -29,7 +29,7 @@ from shapely.affinity import affine_transform
 from shapely.geometry import box, mapping, shape
 from shapely.ops import unary_union
 
-from grid_utils import get_grid_paths, normalize_grid_id
+from core.grid_utils import get_grid_paths, normalize_grid_id
 
 # ════════════════════════════════════════════════════════════════════════
 # Annotation sources

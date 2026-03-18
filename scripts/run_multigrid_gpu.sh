@@ -23,14 +23,14 @@ PY
 
 echo
 echo "[1/2] 3-grid baseline with current default parameters"
-python multi_grid_baseline.py \
+python scripts/analysis/multi_grid_baseline.py \
   --grid-ids G1238 G1189 G1190 \
   --output-subdir baseline_default \
   --force
 
 echo
 echo "[2/2] Generalization check using best G1238 params"
-python multi_grid_baseline.py \
+python scripts/analysis/multi_grid_baseline.py \
   --grid-ids G1238 G1189 G1190 \
   --best-from-summary G1238 \
   --force

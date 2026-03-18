@@ -15,17 +15,29 @@ data/
     ANNOTATION_SPEC.md        — V1.2 标注规范（installation footprint 定义）
     annotation_manifest.csv   — 标注 manifest (quality tier T1/T2, review status)
   coco/                       — COCO 格式训练数据（export_coco_dataset.py 生成）
-tiles/<GridID>/               — 各 Grid 的航测瓦片 + VRT
-results/<GridID>/             — 检测结果、评估报告、图表
+tiles/<GridID>/               — 各 Grid 的航测瓦片（数据目录，禁止放源码）
+results/<GridID>/             — 检测结果、评估报告、图表（数据目录，禁止放源码）
   masks/                      — per-tile 检测掩膜
   vectors/                    — per-tile 矢量化结果
   presence_metrics.csv        — V1.2 installation presence P/R/F1
   footprint_metrics.csv       — V1.2 footprint IoU/Dice 分布
   area_error_metrics.csv      — V1.2 面积误差分桶
-checkpoints/                  — 微调模型权重
-docs/                         — 工作流文档
+checkpoints/                  — 微调模型权重（数据目录，禁止放源码）
+core/
+  grid_utils.py               — Grid 路径/坐标工具函数（共享模块）
 scripts/
-  bootstrap_manifest.py       — 从 GPKG 生成初始 annotation manifest
+  analysis/
+    param_search.py            — 检测参数网格搜索
+    calibration_sweep.py       — 后处理阈值校准扫描
+    multi_grid_baseline.py     — 多 grid baseline/泛化对比
+  imagery/
+    download_tiles.py          — WMS 瓦片下载 + 地理配准
+    grid_preview_batch.py      — 低分辨率 grid 预览批量生成
+    review_grid_previews.py    — 浏览器交互式 grid 预览审查
+    build_vrt_g1238.py         — G1238 VRT 拼接（legacy helper）
+  annotations/
+    bootstrap_manifest.py      — 从 GPKG 生成初始 annotation manifest
+    prepare_jhb_grids.py       — JHB grid 准备
 ```
 
 ## Scripts
@@ -34,15 +46,13 @@ scripts/
 - `export_coco_dataset.py` — 标注→COCO 实例分割数据集导出（chip 切分 + train/val 划分 + georeferenced chips），支持 `--manifest`、`--tier-filter`、`--category-name`
 - `train.py` — Mask R-CNN 微调训练（两阶段：heads-only → full fine-tune），需要 CUDA GPU
 - `building_filter.py` — OSM+Microsoft 建筑轮廓 → buildings.gpkg + tile_manifest.csv
-- `tiles/build_vrt.py` — WMS 瓦片配准 + VRT 拼接，GRID_ID 变量控制目标 Grid
-- `grid_utils.py` — Grid 路径/坐标工具函数
-- `scripts/bootstrap_manifest.py` — 标注 manifest 初始化
+- `core/grid_utils.py` — Grid 路径/坐标工具函数
 
 ## Fine-tuning Workflow
 
 ```bash
 # 0. 生成标注 manifest（首次或标注变更后）
-python3 scripts/bootstrap_manifest.py
+python3 scripts/annotations/bootstrap_manifest.py
 
 # 1. 导出 COCO 数据集（400×400 chips, 0.25 overlap, 80/20 split）
 python export_coco_dataset.py --output-dir data/coco

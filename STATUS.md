@@ -1,12 +1,24 @@
 # Project Status — Cape Town Solar Panel Detection
 
-**Last Updated**: 2026-03-17
+**Last Updated**: 2026-03-18
 
 ## Current Phase
 
 V1.2 — Evaluation Profile & Annotation Alignment (COMPLETE; installation profile validated on GPU for G1189/G1190/G1238)
 
 ---
+
+## Progress Tracker
+<!-- progress:status:start -->
+### Recent Updates
+- 2026-03-18: Added low-resolution grid preview batching for G1240+ screening and contact-sheet generation.
+- 2026-03-18: Added browser review UI for keep/exclude/review decisions with WSL-friendly LAN access hints.
+- 2026-03-18: Completed the first 100-grid preview batch from G1240 and finished manual screening for that batch.
+
+### Current Ops Focus
+- Repository structure cleanup: reduce root-level script clutter and group workflows by purpose.
+- Export reviewed keep/exclude decisions into a reusable grid manifest for later tile downloads.
+<!-- progress:status:end -->
 
 ## V0: Baseline Detection Pipeline — COMPLETE
 
@@ -52,7 +64,7 @@ Fine-tuned Mask R-CNN on 257 Cape Town annotations across 3 grids.
 ### Residual Issues
 
 - G1189 small-panel recall regressed: 0.3077 → 0.2308 (val split)
-- Post-training calibration sweep not done
+- Post-training calibration sweep completed; inference bundle freeze still pending
 - Leave-one-grid-out cross-validation pending
 - JHB transfer evaluation not performed
 - Parameter freeze for v1 inference bundle pending

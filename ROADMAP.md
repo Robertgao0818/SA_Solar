@@ -1,5 +1,17 @@
 # Roadmap — Cape Town Solar Panel Detection
 
+## Execution Track
+<!-- progress:roadmap:start -->
+### Recently Completed
+- 2026-03-18: Added low-resolution grid preview batching for G1240+ screening and contact-sheet generation.
+- 2026-03-18: Added browser review UI for keep/exclude/review decisions with WSL-friendly LAN access hints.
+- 2026-03-18: Completed the first 100-grid preview batch from G1240 and finished manual screening for that batch.
+
+### Next Up
+- Repository structure cleanup: reduce root-level script clutter and group workflows by purpose.
+- Export reviewed keep/exclude decisions into a reusable grid manifest for later tile downloads.
+<!-- progress:roadmap:end -->
+
 ## V0: Baseline Detection Pipeline — DONE
 
 Stock geoai `SolarPanelDetector` (Mask R-CNN ResNet50-FPN) + post-processing.
@@ -43,7 +55,7 @@ Fine-tune Mask R-CNN on 257 Cape Town annotations across 3 grids.
 - [x] Best checkpoint selected: `checkpoints/v1_ft_cs400_tileval_20260317_r4/best_model.pth` (`val_AP50=0.4205`)
 
 ### TODO
-- [ ] Post-training calibration sweep (confidence, mask, post_conf thresholds)
+- [x] Post-training calibration sweep (min_object_area 2→5, max_elongation 4→8, post_conf unchanged at 0.70)
 - [ ] Freeze best parameter set as v1 inference bundle
 - [ ] Merge additional high-value annotations and rerun the same val-split protocol
 - [ ] Leave-one-grid-out cross-validation
@@ -129,7 +141,7 @@ All runs below used:
 
 ### TODO
 - [ ] Manual T1 review of G1189/G1190 val annotations (upgrade from T2)
-- [ ] Post-training calibration sweep (deferred from V1)
+- [x] Post-training calibration sweep (completed: min_area=5, max_elongation=8, macro mean F1 +0.021)
 - [ ] G1189 small-panel (5-20m²) targeted annotation augmentation
 
 ---
