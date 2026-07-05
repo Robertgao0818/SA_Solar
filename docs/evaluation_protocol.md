@@ -248,5 +248,6 @@ wave1 实测:排名随 polygon-conf 口径在「固定阈 v3c 赢 / 最优阈 un
 - installation_sym 诊断:`scripts/analysis/installation_sym_eval.py`
   (结果:`results/analysis/installation_sym/`)
 - 四通道框架:[`validation_strategy.md`](validation_strategy.md)
-- legacy conf 过滤语义(fall-through vs first-match)的 pin:
+- conf/elong tier 迭代语义:2026-07-05 **D5 裁决**统一为 first-match-wins
+  (eval/dev 链收敛到生产 `core/postproc._apply_tiered_keep`;ADR-0001 D5)。pin:
   `tests/postproc/test_legacy_conf_filter.py`

@@ -1,20 +1,33 @@
-"""Regression tests for the 2026-06-10 legacy post_conf/conf_tiered fix (F1-gap Tier A2 / C11).
+"""Regression tests for the legacy post_conf/conf_tiered filter
+(originally the 2026-06-10 F1-gap Tier A2 / C11 fix; tier semantics updated by
+the 2026-07-05 D5 ruling — see below).
 
-Pre-fix behavior on the legacy path (detect_and_evaluate.py geoai path A):
-as soon as predictions had an ``area_m2`` column, the hardcoded module-level
-``CONF_TIERED`` was applied unconditionally; ``--postproc-config`` could not
-inject ``conf_tiered`` at all (unknown key, silently ignored) and the config's
-``post_conf_threshold`` was dead. These tests pin:
+The 2026-06-10 fix made the legacy path (detect_and_evaluate.py geoai path A)
+honor ``--postproc-config``: before it, as soon as predictions had an
+``area_m2`` column the hardcoded module-level ``CONF_TIERED`` was applied
+unconditionally, ``conf_tiered`` could not be injected (unknown key, silently
+ignored) and the config's ``post_conf_threshold`` was dead.
 
-1. the legacy config parser now accepts ``conf_tiered``;
-2. an injected ``conf_tiered`` actually takes effect (fails pre-fix);
-3. default behavior (no config) is per-polygon identical to the old inline
-   hardcoded logic;
+**D5 ruling (2026-07-05, ADR-0001):** the tier-iteration semantics of the two
+paths are UNIFIED onto **first-match-wins** (``~matched`` — each polygon is
+judged only by its highest-``min_area`` tier), the semantics production/census
+(``core/postproc._apply_tiered_keep`` via finalize.py) has always used. The
+legacy path's earlier ``fall-through`` (``~keep_mask`` — a polygon failing a
+high tier could be rescued by a lower tier) is retired. Only the band
+area>=200 m² & conf in [0.65, 0.70) changes (fall-through kept it, first-match
+drops it); production inventory is unaffected (already first-match).
+
+These tests pin:
+
+1. the legacy config parser accepts ``conf_tiered``;
+2. an injected ``conf_tiered`` actually takes effect (fails pre-2026-06-10);
+3. default behavior (no config) is per-polygon identical to the canonical
+   first-match oracle;
 4. the re-pinned ``configs/postproc/batch003_best_f1.json`` reproduces the
-   pre-fix hardcoded behavior per polygon (re-pin correctness);
-5. the documented legacy-vs-direct tier-iteration divergence (fall-through vs
-   first-match-wins) stays exactly where documented: area>=200 m² with
-   conf in [0.65, 0.70).
+   canonical first-match behavior per polygon (re-pin correctness);
+5. the two paths now CONVERGE (D5): the former divergence band
+   area>=200 m² & conf in [0.65, 0.70) is dropped by both, and the legacy
+   path is byte-identical to ``core/postproc._apply_tiered_keep``.
 """
 from __future__ import annotations
 
@@ -45,8 +58,9 @@ def _gdf(rows):
     return gpd.GeoDataFrame(rows, geometry=geoms, crs="EPSG:32734")
 
 
-def _legacy_inline_conf_filter(pred_gdf, tiers):
-    """Verbatim replica of the pre-2026-06-10 inline filter (oracle).
+def _legacy_fallthrough_conf_filter(pred_gdf, tiers):
+    """Retired pre-D5 fall-through oracle (``~keep_mask``), kept only to prove
+    the D5 divergence band actually moved.
 
     Source: detect_and_evaluate.py:796-804 @ commit 0b6147e.
     """
@@ -55,6 +69,18 @@ def _legacy_inline_conf_filter(pred_gdf, tiers):
         tier_mask = (pred_gdf["area_m2"] >= min_area) & ~keep_mask
         keep_mask |= tier_mask & (pred_gdf["confidence"] >= thresh)
     return pred_gdf[keep_mask].copy()
+
+
+def _first_match_conf_filter(pred_gdf, tiers):
+    """Canonical first-match-wins oracle (post-D5), mirroring
+    ``core/postproc._apply_tiered_keep`` (``~matched``)."""
+    keep = pd.Series(False, index=pred_gdf.index)
+    matched = pd.Series(False, index=pred_gdf.index)
+    for min_area, thresh in tiers:
+        tier_rows = (pred_gdf["area_m2"] >= min_area) & ~matched
+        keep |= tier_rows & (pred_gdf["confidence"] >= thresh)
+        matched |= tier_rows
+    return pred_gdf[keep].copy()
 
 
 def _synthetic_frame():
@@ -102,36 +128,52 @@ def test_injected_conf_tiered_takes_effect():
     assert len(default) == 1
 
 
-def test_default_behavior_identical_to_old_inline_logic():
+def test_default_behavior_matches_first_match_oracle():
     gdf = _synthetic_frame()
-    expected = _legacy_inline_conf_filter(gdf, CONF_TIERED)
+    expected = _first_match_conf_filter(gdf, CONF_TIERED)
     actual, _ = apply_conf_filter(gdf)
     assert list(actual.index) == list(expected.index)
 
 
-def test_repinned_batch003_reproduces_hardcoded_behavior_per_polygon():
-    """Acceptance check: the re-pinned preset == pre-fix hardcoded behavior."""
+def test_repinned_batch003_reproduces_first_match_behavior_per_polygon():
+    """Acceptance check: the re-pinned preset == canonical first-match behavior."""
     params = load_postproc_config(REPINNED_CONFIG)
     assert "conf_tiered" in params, "batch003_best_f1.json must be re-pinned"
     gdf = _synthetic_frame()
-    expected = _legacy_inline_conf_filter(gdf, CONF_TIERED)
+    expected = _first_match_conf_filter(gdf, params["conf_tiered"])
     actual, _ = apply_conf_filter(gdf, conf_tiered=params["conf_tiered"])
     assert list(actual.index) == list(expected.index)
 
 
-def test_fallthrough_divergence_zone_pinned():
-    """Legacy fall-through keeps area>=200 & conf in [0.65,0.70); direct drops it.
+def test_conf_tier_unified_to_first_match():
+    """D5 ruling (2026-07-05): legacy and direct paths CONVERGE on first-match.
 
-    This divergence predates the fix (legacy hardcoded loop used ~keep_mask).
-    Pinned here so any future unification is an explicit decision, not drift.
+    The former divergence band (area>=200 & conf in [0.65,0.70)) is now dropped
+    by BOTH paths; the retired fall-through would have kept it. This pins the
+    ruling so a silent regression back to fall-through fails CI.
     """
     row = {"area_m2": 250.0, "confidence": 0.66,
            "elongation": 1.0, "mean_r": 100, "mean_g": 100, "mean_b": 100}
     gdf = _gdf([row])
+    # Both canonical paths now drop it (first-match: 250 m² -> tier 0.70, 0.66<0.70).
     legacy_kept, _ = apply_conf_filter(gdf)
-    assert len(legacy_kept) == 1, "legacy fall-through must keep it"
+    assert len(legacy_kept) == 0, "unified first-match must drop it"
     direct_kept, _ = apply_postproc_filters(gdf, {})
-    assert len(direct_kept) == 0, "direct first-match-wins must drop it"
+    assert len(direct_kept) == 0, "direct first-match-wins drops it (unchanged)"
+    # The retired fall-through is what actually moved (kept it before D5).
+    assert len(_legacy_fallthrough_conf_filter(gdf, CONF_TIERED)) == 1
+
+
+def test_legacy_path_byte_identical_to_core_tiered_keep():
+    """D5 dedup-readiness (unblocks #12): the legacy conf filter is now
+    per-polygon identical to core/postproc._apply_tiered_keep, so the two tier
+    implementations can be collapsed to one."""
+    from core.postproc import _apply_tiered_keep
+
+    gdf = _synthetic_frame()
+    legacy, _ = apply_conf_filter(gdf)
+    core_kept = _apply_tiered_keep(gdf, "confidence", CONF_TIERED, op=">=")
+    assert list(legacy.index) == list(core_kept.index)
 
 
 def test_no_area_column_falls_back_to_post_conf():

@@ -35,6 +35,7 @@
 ## Execution Track
 <!-- progress:roadmap:start -->
 ### Recently Completed
+- 2026-07-05: fix(arch-review): land ready-for-agent defect fixes #3/#4/#5
 - 2026-06-24: docs(validation): validation methodology + CT census GT eval + reproducibility study
 - 2026-06-24: feat(census): CT census reporting, output table, GT eval + ops scripts
 - 2026-06-24: feat(training): deepen mask-supervision patch lifecycle
@@ -42,7 +43,6 @@
 - 2026-06-23: docs(validation): add complete Chinese validation & robustness methodology
 - 2026-06-16: perf(census): background per-batch Dropbox backup so next batch's detect overlaps upload
 - 2026-06-16: feat(census): split surveyed-empty from failure + per-grid coverage manifest
-- 2026-06-15: fix(census-setup): accept 0-detection grid as valid smoke test outcome for cls step
 
 ### Next Up
 - Repository structure cleanup: reduce root-level script clutter and group workflows by purpose.

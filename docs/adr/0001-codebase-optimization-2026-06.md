@@ -19,7 +19,7 @@ review 定位的结构问题:F1 主裁判内核埋在 2257-LOC 五合一 module 
 | D2 | **build_training_pool 的 label_source 派生分叉是 by-design**(训练 loader fail-fast raise vs 池构建器 fail-closed,46/112 值矩阵格不同),不统一 | ✅ Accepted(2026-06-12) | `test_build_training_pool_fork_is_divergent_by_design` 锁定 |
 | D3 | **提取一律 move + import shim,绝不留第二份实现** | ✅ Accepted(执行惯例) | steps 1/3/8/9 + 候选 #1(polygon_validation,2026-06-19)均如此执行 |
 | D4 | legacy 链 config.json 的 `merge_mode` 字段为 provenance-only,经 `_CACHE_IGNORE_KEYS` 排除缓存比对(保历史结果不被强制重跑) | ✅ Accepted(2026-06-12) | step 6 |
-| D5 | postproc tier 语义:**fall-through vs first-match 统一口径或 op_mode 双语义并存** | ⏳ **PENDING** — block 步骤 11 的 C2 | 见 review C2 |
+| D5 | postproc tier 迭代语义(conf/elong):**统一为 first-match-wins** — eval/dev 链 `detect_and_evaluate.apply_conf_filter` 从 legacy fall-through(`~keep_mask`)收敛到生产/census 的 `core/postproc._apply_tiered_keep`(`~matched`);唯一影响带 area≥200 & conf∈[0.65,0.70)(原放行→现拒绝),显式 caliber 变更,生产 inventory 走 finalize 早已 first-match 不受影响 | ✅ Accepted(2026-07-05,用户裁决选 first-match 统一) | `test_legacy_conf_filter.py`(convergence + 对 `_apply_tiered_keep` byte-equiv);解锁 GH #12 tier-merge dedup |
 | D6 | chunked tile glob 收紧为 `{grid}_*_*_geo.tif`(rule 06 规范布局,替代 hn_ops 旧 `*.tif`) | ✅ Accepted(2026-06-12,step 9 有意收紧) | handoff "Notable findings" |
 
 ## 主线 11 步
@@ -34,7 +34,7 @@ review 定位的结构问题:F1 主裁判内核埋在 2257-LOC 五合一 module 
 - [x] **8. positive-source loader → `core/training/positive_sources.py`**(候选 #4)— dataset_builder monkeypatch 已删;`review_root` 显式参数;build_unified_reviewall 720→534 行薄壳;v2 dry-run manifest byte-identical(指纹 `d01e1bf1`,68 grid / 5903 标注);分叉处置见 D2 *(2026-06-12)*
 - [x] **9. `core/chip_extraction.py`**(候选 #7)— 收编 4 份 crop + 4 个 find_tile;**修 mosaic 静默丢 HN bug**(回归测试固化);export_v4_hn 补 region=;真实 CT G1632 chip md5 一致;11 新测试 *(2026-06-12)*
 - [ ] **10. 4 份 merge-HN 副本 → `hn_ops.merge_hn_into_coco`**(候选 #8)— 注意 hn_ops 实际在 `pipeline/hn_ops.py`。依赖步骤 9 ✅ 已解锁;迁移前确认 docs/workflows.md 引用的老 CLI 无活跃 reproduce 依赖
-- [ ] **11. 收尾三件** — region alias 窄手术(#12,保短别名输出合约);`resolve_gt_spec` 去私名公开(#13);postproc 过滤链统一(#2,**被 D5 裁决 block**)。依赖步骤 1、3 ✅ 已解锁
+- [ ] **11. 收尾三件** — region alias 窄手术(#12,保短别名输出合约);`resolve_gt_spec` 去私名公开(#13);postproc 过滤链统一(#2,**D5 已裁决 first-match 2026-07-05 → 已解锁**;tier 语义已统一,dedup 执行见 GH #12)。依赖步骤 1、3 ✅ 已解锁
 
 ## 候选 #1/#2 后续(2026-06-19 架构 review 独立追踪)
 

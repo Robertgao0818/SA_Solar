@@ -71,7 +71,8 @@ SHADOW_RGB_THRESH    = 60     # RGB 三通道均 < 此值视为阴影
 POST_CONF_THRESHOLD  = 0.85   # 后处理置信度过滤（V3 Model C 校准，recall≥94%）
 # 大面积检测使用更低的置信度阈值（商业太阳能板 confidence 系统性偏低）
 CONF_TIERED = [
-    # (min_area_m2, conf_threshold)  — 从大到小匹配，第一个命中的生效
+    # (min_area_m2, conf_threshold) — 从大到小匹配，第一个命中的档生效
+    # (first-match-wins, ADR-0001 D5 裁决 2026-07-05；与 core/postproc 一致)
     (200, 0.70),   # 超大型商业板
     (100, 0.65),   # 大型商业板
     (0,   0.85),   # 住宅板（默认）
@@ -266,21 +267,26 @@ def apply_conf_filter(pred_gdf, conf_tiered=None, post_conf_threshold=None):
     从 --postproc-config 注入(hardcoded CONF_TIERED 无条件生效,配置里的
     post_conf_threshold 在带 area_m2 的预测上是死配置)。
 
-    ⚠️ tier 迭代语义保留 legacy **fall-through**(`~keep_mask`:一行可被任何
-    min_area≤area 的 tier 放行),与 core/postproc._apply_tiered_keep 的
-    first-match-wins(`~matched`)不同——对默认 tiers 而言差异仅在
-    area≥200 & conf∈[0.65,0.70):legacy 放行(有效阈值 0.65),direct 拒绝。
-    保留 fall-through 是行为保全(修复前后逐多边形一致);统一两路径语义
-    属于口径翻转,须另立显式决定,不在本修复范围。
+    tier 迭代语义:2026-07-05 **D5 裁决**统一为 **first-match-wins**
+    (`~matched`:每行只归属它满足的最高 min_area 那一档,用该档阈值判定),
+    与 core/postproc._apply_tiered_keep 现已完全一致。此前本路径为 legacy
+    **fall-through**(`~keep_mask`,失败高档可被低档捞回);裁决把 eval/dev 链
+    收敛到生产/census 的 first-match。唯一受影响带 = area≥200 & conf∈[0.65,0.70)
+    (原 fall-through 放行→现拒绝),作为显式 caliber 变更登记(ADR-0001 D5;
+    生产/census inventory 走 finalize 早已是 first-match,不受影响)。
+    #12 tier-merge dedup 由此解锁,可将两处 tier 实现合一。
 
     返回 (filtered_gdf, description_str);description 供调用方打印日志。
     """
     if "area_m2" in pred_gdf.columns:
         tiers = conf_tiered if conf_tiered is not None else CONF_TIERED
+        # first-match-wins (ADR-0001 D5): 每行只归属它满足的最高 min_area 档。
         keep_mask = pd.Series(False, index=pred_gdf.index)
+        matched = pd.Series(False, index=pred_gdf.index)
         for min_area, thresh in tiers:
-            tier_mask = (pred_gdf["area_m2"] >= min_area) & ~keep_mask
+            tier_mask = (pred_gdf["area_m2"] >= min_area) & ~matched
             keep_mask |= tier_mask & (pred_gdf["confidence"] >= thresh)
+            matched |= tier_mask
         filtered = pred_gdf[keep_mask].copy()
         tier_desc = ", ".join(f"≥{a}m²→{t}" for a, t in tiers)
         return filtered, f"分段:{tier_desc}"
@@ -831,10 +837,13 @@ def detect_solar_panels(
 
         # 长宽比过滤：分面积段（大面积商业板 elongation 系统性偏高）
         if "elongation" in pred_gdf.columns and "area_m2" in pred_gdf.columns:
+            # first-match-wins (ADR-0001 D5), 与 core/postproc._apply_tiered_keep 一致。
             elong_keep = pd.Series(False, index=pred_gdf.index)
+            elong_matched = pd.Series(False, index=pred_gdf.index)
             for min_area, max_elong in ELONGATION_TIERED:
-                tier_mask = (pred_gdf["area_m2"] >= min_area) & ~elong_keep
+                tier_mask = (pred_gdf["area_m2"] >= min_area) & ~elong_matched
                 elong_keep |= tier_mask & (pred_gdf["elongation"] <= max_elong)
+                elong_matched |= tier_mask
             pred_gdf = pred_gdf[elong_keep].copy()
             elong_desc = ", ".join(f"≥{a}m²→≤{e}" for a, e in ELONGATION_TIERED)
             elong_info = f"elongation({elong_desc})"
