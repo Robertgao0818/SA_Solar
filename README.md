@@ -41,9 +41,9 @@ scripts/
   imagery/                tile download / preview / VRT
   training/               COCO export, hard-negative export
   annotations/            review GUI, SAM FN GUI, batch finalize
-detect_and_evaluate.py    primary inference + eval entry
-detect_direct.py          stage 1 of direct pipeline (raw detections)
-finalize.py               stage 3: raw_detections -> predictions_metric.gpkg
+detect_and_evaluate.py    geoai eval/dev entry (benchmarks + diagnostics)
+detect_direct.py          production census engine, stage 1 (raw detections)
+finalize.py               production census engine, stage 3: raw_detections -> predictions_metric.gpkg
 train.py                  Mask R-CNN fine-tune
 export_coco_dataset.py    annotations -> COCO instance-segmentation dataset
 ```
@@ -60,15 +60,21 @@ Workflow command sequences: [`docs/workflows.md`](docs/workflows.md).
 # Verify CUDA GPU + GIS deps
 ./scripts/check_env.sh
 
-# Inference + eval on one grid (CUDA required)
+# Inference + eval on one grid (CUDA required; geoai eval/dev chain;
+# current-best checkpoint: see configs/model_registry.yaml)
 python detect_and_evaluate.py \
   --grid-id G1688 \
-  --model-path checkpoints/exp003_C_targeted_hn/best_model.pth \
+  --model-path <ckpt> \
   --postproc-config configs/postproc/v4_canonical.json \
   --force
 
-# Primary benchmark
-python scripts/analysis/run_benchmark.py --suite jhb_cbd_25_vexcel
+# Production census engine (per-detection merge; see docs/workflows.md)
+python detect_direct.py --grid-id <GRID> --region <region> --model-path <ckpt>
+python finalize.py --input <out>/raw_detections.pkl --output-dir <out> \
+  --postproc-config configs/postproc/v4_canonical.json --merge-mode per-detection
+
+# Benchmark (suite definitions: configs/benchmarks/post_train.yaml)
+python scripts/analysis/run_benchmark.py --suite <suite_id>
 ```
 
 Large data (tiles, COCO datasets, model weights) lives outside the repo under

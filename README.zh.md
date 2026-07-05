@@ -39,9 +39,9 @@ scripts/
   imagery/                瓦片下载 / 预览 / VRT
   training/               COCO 导出, hard-negative 导出
   annotations/            review GUI, SAM FN GUI, 批量 finalize
-detect_and_evaluate.py    主推理 + 评估入口
-detect_direct.py          直接 pipeline 第 1 阶段 (raw detections)
-finalize.py               第 3 阶段: raw_detections -> predictions_metric.gpkg
+detect_and_evaluate.py    geoai 评估/开发入口 (benchmark + 诊断)
+detect_direct.py          生产 census 引擎第 1 阶段 (raw detections)
+finalize.py               生产 census 引擎第 3 阶段: raw_detections -> predictions_metric.gpkg
 train.py                  Mask R-CNN 微调
 export_coco_dataset.py    标注 -> COCO 实例分割数据集
 ```
@@ -58,15 +58,21 @@ export_coco_dataset.py    标注 -> COCO 实例分割数据集
 # 验证 CUDA GPU + GIS 依赖
 ./scripts/check_env.sh
 
-# 单 grid 推理 + 评估 (需要 CUDA)
+# 单 grid 推理 + 评估 (需要 CUDA; geoai 评估/开发链;
+# 当前最优 checkpoint 见 configs/model_registry.yaml)
 python detect_and_evaluate.py \
   --grid-id G1688 \
-  --model-path checkpoints/exp003_C_targeted_hn/best_model.pth \
+  --model-path <ckpt> \
   --postproc-config configs/postproc/v4_canonical.json \
   --force
 
-# 主 benchmark
-python scripts/analysis/run_benchmark.py --suite jhb_cbd_25_vexcel
+# 生产 census 引擎 (per-detection merge; 见 docs/workflows.md)
+python detect_direct.py --grid-id <GRID> --region <region> --model-path <ckpt>
+python finalize.py --input <out>/raw_detections.pkl --output-dir <out> \
+  --postproc-config configs/postproc/v4_canonical.json --merge-mode per-detection
+
+# Benchmark (suite 定义见 configs/benchmarks/post_train.yaml)
+python scripts/analysis/run_benchmark.py --suite <suite_id>
 ```
 
 大数据（tiles、COCO 数据集、模型权重）放在仓库外的 `~/zasolar_data/`。

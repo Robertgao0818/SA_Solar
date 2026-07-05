@@ -22,10 +22,15 @@ RUNS=(
   unified_reviewall_A_vexcel_2024_direct_sam_maskbox
 )
 
-# Sanity check: all 6 runs must be registered.
+# Sanity check: all 6 runs must be registered. core.region_registry is the
+# sole regions.yaml read path (ADR-0001 step 5) — no grep/sed on the YAML file.
+REGISTERED_RUNS="$(python3 -c "
+from core import region_registry
+print('\n'.join(region_registry.list_model_runs('johannesburg')))
+")"
 for r in "${RUNS[@]}"; do
-  if ! grep -q "^      ${r}:" configs/datasets/regions.yaml; then
-    echo "[fatal] model_run '${r}' is not registered in configs/datasets/regions.yaml"
+  if ! grep -qxF -- "$r" <<< "$REGISTERED_RUNS"; then
+    echo "[fatal] model_run '${r}' is not registered in configs/datasets/regions.yaml (johannesburg/model_runs)"
     echo "        Patch the johannesburg/model_runs block before running this script."
     exit 2
   fi

@@ -35,6 +35,16 @@ Tagging workflow (to be implemented): manual tag per grid + optional StatsSA urb
 
 ## Four validation channels
 
+> **Implementation status (2026-07-03)**: the named deliverable scripts below
+> are the original spec. As built, only Channel 3's
+> `scripts/analysis/grid_plausibility.py` and the Ch3/Ch4 backbone
+> `scripts/analysis/area_aggregate_eval.py` exist;
+> `ra_precision_sample.py` / `build_recall_aoi_queue.py` /
+> `external_agreement_grid.py` were never created — Ch1 (25-grid stratified
+> precision hit-table), Ch2 (25-grid clean GT recall) and Ch4 (SSEG kW
+> calibration) ran via dedicated campaign tooling instead. Results live in
+> `docs/experiments/` and `docs/validation/`.
+
 ### Channel 1 — Stratified RA precision audit (primary precision evidence)
 
 **What**: random sample of N detected polygons per (region, grid_type), each adjudicated by an RA as true/false. Output: precision ± 95% CI by stratum.

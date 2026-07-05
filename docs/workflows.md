@@ -20,7 +20,36 @@ source scripts/activate_env.sh     # Activate the env
 - Runtime caches stay inside the repo: `.cache/`, `.config/`, `.local/`,
   `.tmp/`
 
-## Inference + Evaluation
+## Production Census Inference (detect_direct → finalize)
+
+The production / census engine is `detect_direct.py` → `finalize.py
+--merge-mode per-detection` with `configs/postproc/v4_canonical.json` — NOT
+the geoai `detect_and_evaluate.py` chain (see
+`.claude/rules/05-runpod-inference.md`).
+
+```bash
+# Stage 1: raw detections (DataLoader overlaps tile IO with GPU forward)
+python detect_direct.py --grid-id <GRID> --region <region> \
+    --model-path <ckpt> --batch-size 4 --num-workers 2 --prefetch-factor 2
+
+# Stage 3: raw_detections.pkl -> predictions_metric.gpkg
+python finalize.py --input <out>/raw_detections.pkl --output-dir <out> \
+    --postproc-config configs/postproc/v4_canonical.json --merge-mode per-detection
+```
+
+- Cross-experiment comparability is locked by v4_canonical + per-detection.
+- Single source of truth for these flags: `scripts/lib/census_caliber.sh`
+  (sourced by `ct_census_setup.sh`, `ct_census_run.sh`, and
+  `runpod_detect_direct_template.sh`). Override a `CENSUS_CALIBER_*` var for a
+  named diagnostic profile (e.g. `CENSUS_CALIBER_MERGE_MODE=pixel-or`); never
+  drop `--merge-mode` / `--postproc-config` from a finalize call.
+- Census orchestration (multi-grid, CLS phase, coverage manifest, merge,
+  reporting): `scripts/ct_census_run.sh` and the `scripts/ct_census_*`
+  siblings; operational runbook in `docs/runbook/ct_census_overnight.md`.
+- Long runs go inside `tmux` (never `nohup`), per
+  `.claude/rules/05-runpod-inference.md`.
+
+## Inference + Evaluation (geoai eval/dev chain)
 
 ```bash
 # Single grid, default model + canonical post-processing
@@ -169,10 +198,12 @@ python train.py --coco-dir /dev/shm/<set_name> --output-dir /workspace/checkpoin
 ### Training (spot-safe)
 
 ```bash
-# nohup against SSH disconnect
-nohup python train.py --coco-dir /dev/shm/<set_name> \
+# tmux against SSH disconnect (the old nohup pattern is retired —
+# see .claude/rules/05-runpod-inference.md)
+tmux new -s train "python -u train.py --coco-dir /dev/shm/<set_name> \
     --output-dir /workspace/checkpoints/<exp> --batch-size 32 \
-    > /workspace/train_log.txt 2>&1 &
+    2>&1 | tee /workspace/train_log.txt; bash"
+# Reattach after disconnect: tmux attach -t train
 
 # Spot preemption recovery (resume from latest checkpoint)
 ls -t /workspace/checkpoints/<exp>/stage*_epoch*.pth | head -1
@@ -185,8 +216,9 @@ python train.py --coco-dir ... --output-dir ... --resume <checkpoint.pth>
 # Verify rasterstats is installed — required for confidence backfill
 python -c "import rasterstats; print('OK')"
 
-# Single grid
-python detect_and_evaluate.py --grid-id G1293 \
+# Single grid (G1293 exists in BOTH CT and JHB — --region is mandatory
+# for overlap IDs, see .claude/rules/06-multi-city.md)
+python detect_and_evaluate.py --grid-id G1293 --region cape_town \
     --model-path /workspace/checkpoints/<exp>/best_model.pth \
     --evaluation-profile installation --force
 ```

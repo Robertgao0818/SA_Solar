@@ -42,6 +42,11 @@ LOGS=${LOGS:-/root/census_logs}
 TILES_DISK=${TILES_DISK:-/root/tiles_disk}
 GLIST="$STATE/glist.txt"
 
+# Census-caliber detect + finalize flags from the shared single source of truth
+# (scripts/lib/census_caliber.sh) — this setup smoke test must run the SAME
+# caliber as ct_census_run.sh, never a restated copy that can drift.
+source "$ZAS/scripts/lib/census_caliber.sh"
+
 mkdir -p "$STATE" "$LOGS" "$TILES_DISK"
 echo "setup" > "$STATE/PHASE"
 
@@ -146,18 +151,16 @@ echo "  tiles for $SG: $ntiles files under source dir $TILES_DISK/$SRC ($(du -sh
 
 # ENGINE = direct Mask R-CNN (detect_direct -> finalize per-detection), same as
 # ct_census_run.sh infer_one and the LOCKED unifiedA_li_perdet baseline. NOT geoai.
-# --detections-per-img 300 is detect_direct's direct-mode default, passed explicitly
-# (matches run_benchmark.py's baseline; NOT 100, which is the geoai-parity value).
+# Caliber flags come from scripts/lib/census_caliber.sh (single source of truth).
 SOLAR_TILES_ROOT="$TILES_DISK" python detect_direct.py \
   --grid-id "$SG" --region ct --imagery-layer aerial_2025 \
   --model-run "$RUN" --model-path "$DETECTOR_DIR/best_model.pth" --output-dir "$RESULTS_DIR/$SG" \
-  --detections-per-img 300 \
-  --chip-size 400 --overlap 0.25 --mask-threshold 0.3 \
+  "${CENSUS_CALIBER_DETECT_ARGS[@]}" \
   --batch-size 4 --num-workers 2 --prefetch-factor 2 --device cuda \
   || die "smoke detect_direct failed"
 SOLAR_TILES_ROOT="$TILES_DISK" python finalize.py \
   --input "$RESULTS_DIR/$SG/raw_detections.pkl" --output-dir "$RESULTS_DIR/$SG" \
-  --postproc-config configs/postproc/v4_canonical.json --merge-mode per-detection \
+  "${CENSUS_CALIBER_FINALIZE_ARGS[@]}" \
   --allow-overwrite-canonical \
   || die "smoke finalize failed"
 [ -f "$RESULTS_DIR/$SG/predictions_metric.gpkg" ] || die "smoke detect produced no predictions_metric.gpkg"
@@ -175,12 +178,12 @@ if [ "$DG" != "skip" ]; then
   SOLAR_TILES_ROOT="$TILES_DISK" python detect_direct.py \
     --grid-id "$DG" --region ct --imagery-layer aerial_2025 \
     --model-run "$RUN" --model-path "$DETECTOR_DIR/best_model.pth" --output-dir "$RESULTS_DIR/$DG" \
-    --detections-per-img 300 --chip-size 400 --overlap 0.25 --mask-threshold 0.3 \
+    "${CENSUS_CALIBER_DETECT_ARGS[@]}" \
     --batch-size 4 --num-workers 2 --prefetch-factor 2 --device cuda \
     || die "dense smoke detect failed"
   SOLAR_TILES_ROOT="$TILES_DISK" python finalize.py \
     --input "$RESULTS_DIR/$DG/raw_detections.pkl" --output-dir "$RESULTS_DIR/$DG" \
-    --postproc-config configs/postproc/v4_canonical.json --merge-mode per-detection \
+    "${CENSUS_CALIBER_FINALIZE_ARGS[@]}" \
     --allow-overwrite-canonical || die "dense smoke finalize failed"
   nd=$(python -c "import geopandas as gpd;print(len(gpd.read_file('$RESULTS_DIR/$DG/predictions_metric.gpkg')))" 2>/dev/null || echo 0)
   [ "$nd" -gt 0 ] || die "dense positive-control FAILED: $DG produced 0 detections — tile addressing or model load is broken"

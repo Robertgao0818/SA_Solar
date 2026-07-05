@@ -1,5 +1,9 @@
 # Evaluation Protocol — 口径与工作点纪律
 
+> **Sync rule**: this file is summarized in `CLAUDE.md` ("Evaluation red
+> lines"). DO update that summary in the same commit whenever the rules here
+> change — a stale always-loaded summary is worse than none.
+>
 > Status: ACTIVE (2026-06-10, F1-gap Tier A 落地; plan:
 > [`plans/2026-06-10-rcnn-f1-gap-review.md`](plans/2026-06-10-rcnn-f1-gap-review.md) §4)
 > 历史背景:口径 artifact 在本项目移动过 5–13pp,导致 train20 / v4_2 两次错误裁决。

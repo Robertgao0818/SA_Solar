@@ -1,4 +1,9 @@
-# 项目规则 — Cape Town Solar Panel Detection
+# 项目规则 — ZAsolar
+
+> **Update 2026-07-03**: 大数据已于 2026-04-26 迁至 `~/zasolar_data/`（WSL
+> ext4，见 `docs/architecture.md`）。仓库内 `tiles/`、`results/`、
+> `checkpoints/` 现在只是占位目录/symlink，不应包含真实数据；下述 git
+> 大文件保护规则依然全部有效（symlink 与误放文件同样禁止入 git）。
 
 ## Git 大文件保护
 

@@ -1,5 +1,9 @@
 # Architecture — South Africa Rooftop Solar Detection
 
+> **Sync rule**: this file is summarized in `CLAUDE.md` ("Repo map"). DO
+> update that summary in the same commit whenever the layout described here
+> changes — a stale always-loaded summary is worse than none.
+>
 > **V1.4 (2026-04-22)**: Success metric is grid-aggregate installation
 > inventory, with per-polygon F1 retained as a diagnostic. Validation runs four
 > channels (stratified precision, exhaustive recall, plausibility, opportunistic
@@ -9,8 +13,15 @@
 > **Sibling subrepo `solar_backdating`** (`/home/gaosh/projects/solar_backdating/`,
 > remote `Robertgao0818/solar_backdating`) handles install-date back-dating via
 > GEHistoricalImagery. It runs as a plugin of this repo, sharing `.venv` and
-> importing `core.region_registry`, `core.annotation_loader`, `core.grid_utils`.
+> importing `core.region_registry`, `core.annotation_loader` and
+> `core.grid_utils` (per its `SHARED_FROM_ZASOLAR.md` contract).
 > All temporal / install-date code lives there; nothing in this repo.
+>
+> **Sibling subrepo `solar_cls`** (`/home/gaosh/projects/solar_cls/`, extracted
+> 2026-05-29) holds the PV/non-PV FP-suppressor chip classifier. Same plugin
+> model (shared `.venv`, imports `core.region_registry`, `core.grid_utils`);
+> the detector consumes its filtered gpkg only as a file path
+> (`--classifier-filtered-gpkg`), never as a Python import.
 >
 > **V1.3 (2026-04-03)**: Task definition is reviewed-prediction-footprint
 > segmentation. Ground truth follows installation-level rules; the `installation`
@@ -140,7 +151,10 @@ docs/
 
 | Script | Description |
 |--------|-------------|
-| `detect_and_evaluate.py` | 主流程：检测→过滤→评估→可视化。支持 `--model-path`、`--evaluation-profile`、`--data-scope`、`--imagery-layer`、`--model-run` |
+| `detect_direct.py` | **生产/census 推理引擎 stage 1**：原始检测（DataLoader 重叠 tile IO 与 GPU forward），输出 `raw_detections.pkl`。`--region` 必填。见 `.claude/rules/05-runpod-inference.md` |
+| `finalize.py` | **生产/census 引擎 stage 3**：`raw_detections.pkl` → `predictions_metric.gpkg`。census 口径锁定 `--merge-mode per-detection` + `configs/postproc/v4_canonical.json` |
+| `scripts/ct_census_run.sh` | CT census orchestrator（per-grid detect_direct→finalize + Phase C CLS 一次性过；兄弟脚本 `ct_census_{setup,status,merge,coverage_manifest,mask_janitor,reset_inference}` 见 `docs/runbook/ct_census_overnight.md`） |
+| `detect_and_evaluate.py` | geoai 评估/开发链：检测→过滤→评估→可视化（benchmark 与诊断用，**非** census 引擎）。支持 `--model-path`、`--evaluation-profile`、`--data-scope`、`--imagery-layer`、`--model-run` |
 | `export_coco_dataset.py` | 标注→COCO 数据集导出。支持 `--neg-ratio`（neg:pos 比例）、`--exclude-grids`（benchmark holdout）、`--audit-csv`（热水器过滤）、`--manifest`、`--no-balance` |
 | `scripts/training/export_targeted_hn.py` | Batch 003 审核 FP → targeted HN chips，合并到 base COCO |
 | `scripts/training/export_v4_hn.py` | Batch 004 小目标 FP shortlist → HN chips（分层采样） |

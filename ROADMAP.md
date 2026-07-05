@@ -5,14 +5,14 @@
 **GOAL**: Solar Panel Census in South Africa, including location x time. 
 
 
-**Active campaigns** (2026-06-12):
+**Active campaigns** (2026-07-03):
 
 | Campaign | Status | Blocker / next step |
 |---|---|---|
 | F1-gap closure — Tier A (caliber & ceiling) | A1–A3 landed (merge-mode calibration rules, presence dual-caliber output, leakage-free operating-point lock); gtnoise T1-ceiling campaign pack built | A4 blocked on RA adjudication of the gtnoise_t1_ceiling sample |
 | F1-gap closure — Tier B (B1 TTA pilot + B2 zerov2 probes) | All zero-GPU prep complete: 268-polygon missed-GT set anchored on 5 grids, three probe scripts written, zerov2 1a′/1b code changes verified locally | Blocked on pod GPU availability (host had no free GPUs 2026-06-10); ~1.5h B1 + ~8h B2 pod work remains; pre-registered kill bars immovable |
 | F1-gap closure — Tier C (training levers) | Non-GPU engineering landed and tested (C-1 negative-pool tooling, C-2 warmup+EMA flags, C-3(b) area-adaptive ignore-band, C-3(a) Phase-0 mislabel harness); full `pytest tests/` 193 passed | Next pod session runs C-1 retrain → C-3(b) single-lever retrain → C-3(a) Phase-0 gate, per `docs/handoffs/2026-06-12-tier-c-pod-runbook.md`; C-4 deliberately not pre-built |
-| CT census | Operating point locked 2026-06-08 (unified_A per-det + solar_cls adaptive_v1 CLS-only, leakage CLEAN); Li KML 53-grid calibration set ingested 2026-06-11 | Run the unified_A×CT calibration on the Li 53-grid set, then full-region rollout |
+| CT census | **Done** (2026-06-16): 2083-grid full run complete (detect_direct→finalize per-det + CLS-only, operating point locked 2026-06-08); global union-merge@IoU0.1 → 111,801 installations / 5.0 km²; reporting + GT eval + reproducibility study landed 2026-06-24 | Campaign closed; follow-ups tracked in `docs/validation/2026-06-24-ct-census-gt-validation.md` |
 | JHB inventory → install-date backdating | **Done** (2026-06-04): FP-cut inventory (47,465→41,393 dets, 9/9 gates PASS) → full GEHI adaptive scan complete in `solar_backdating`; canonical install-dated gpkg = 92.7% point-dated + 2.5% lower-bound (95.1% labeled), delivered to the economic layer | Campaign closed; further work is optimization only (residual ~4.9% undated recovery, Wayback present-clamp + 2023 absent-side cohort refinements) |
 | solar_zerov2 (DINOv3-SAT + Mask2Former bet) | Phase 0 frozen-backbone lost to the V3-C floor even after sweep; revive/kill rides entirely on the Tier B2 probes (backbone unfreeze + pretrained decoder) | Same pod-GPU blocker as Tier B; pre-registered floor: F1 ≥ 0.817 **and** σ_Bw ≤ 0.248 on JHB CBD25 clean_gt |
 | Architecture deepening | Steps 1/3/5/6/8/9 **landed 2026-06-12 PM**: 4 new core modules, monkeypatch deleted, mosaic silent-HN-drop bug fixed, merge-mode provenance closed (CLI-explicit, user decision). All byte-equivalence gates pass; 252 tests green; uncommitted. **Track: `docs/adr/0001-codebase-optimization-2026-06.md`** (checkboxes + decisions D1–D6; evidence in `docs/handoffs/2026-06-12-architecture-opt-landing.md`) | Commit pending review (splittable per step); **`sync_from_runpod.sh` L-namespace drop still unfixed** (live defect on CT census pull path — fix standalone, early); then steps 2/4/7/10/11 per ADR track; D5 (postproc tier semantics) needs ruling before step 11's C2 |

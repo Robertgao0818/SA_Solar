@@ -1,5 +1,10 @@
 # Johannesburg Batch 1 — Inference & Validation Plan
 
+> **ARCHIVE (2026-07-03)**: 本文基于 legacy Gxxxx/JHBnn grid 方案与 CoJ 2023
+> 影像，已被 JNB Vexcel-382 canonical 方案取代（legacy namespace 于
+> 2026-06-03 退役；见 `.claude/rules/06-multi-city.md` 与
+> `docs/adr/0002-grid-namespace-policy.md`）。仅作历史记录保留。
+
 **Created**: 2026-04-05
 **Source**: `Dropbox/RA_Solar/grid_data_joburg/plan_batch1.xlsx`
 **Total grids**: 100 (4 categories x 25 grids)

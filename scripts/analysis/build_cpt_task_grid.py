@@ -36,21 +36,24 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 import geopandas as gpd
 import pandas as pd
-import yaml
 from shapely import force_2d
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core import region_registry  # noqa: E402
 
 DEFAULT_SOURCE_GRID = PROJECT_ROOT / "data" / "task_grid.gpkg"
 DEFAULT_PROBE_CSV = (
     PROJECT_ROOT / "results" / "analysis" / "ct_wms_coverage_probe" / "probe.csv"
 )
-DEFAULT_REGIONS_YAML = PROJECT_ROOT / "configs" / "datasets" / "regions.yaml"
 DEFAULT_OUT_GPKG = PROJECT_ROOT / "data" / "task_grid_cpt.gpkg"
 DEFAULT_OUT_CROSSWALK = PROJECT_ROOT / "data" / "ct_grid_crosswalk_g_to_cpt.csv"
 
@@ -89,13 +92,15 @@ def g_to_cpt(g_id: str) -> str:
     return f"CPT{m.group(1)}"
 
 
-def load_g_anchors(regions_yaml: Path) -> list[str]:
-    """G-prefixed coverage_grids of cape_town.aerial_2025 (Li L-IDs excluded)."""
-    with regions_yaml.open("r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    coverage = (
-        cfg["regions"][REGION_KEY]["imagery_layers"]["aerial_2025"]["coverage_grids"]
-    )
+def load_g_anchors(
+    region_key: str = REGION_KEY, layer_id: str = "aerial_2025"
+) -> list[str]:
+    """G-prefixed coverage_grids of cape_town.aerial_2025 (Li L-IDs excluded).
+
+    Reads through the region registry — the sole sanctioned regions.yaml read
+    path (ADR-0001 step 5); never re-parse the YAML here.
+    """
+    coverage = region_registry.get_imagery_layer(region_key, layer_id).coverage_grids
     return sorted(str(x) for x in coverage if str(x).startswith("G"))
 
 
@@ -103,7 +108,6 @@ def build(
     *,
     source_grid: Path,
     probe_csv: Path,
-    regions_yaml: Path,
     threshold: float,
 ) -> tuple[gpd.GeoDataFrame, pd.DataFrame, list[str]]:
     src = gpd.read_file(source_grid)
@@ -116,7 +120,7 @@ def build(
     cf_by_id = dict(zip(probe["gridcell_id"].astype(str), probe["coverage_fraction"]))
     status_by_id = dict(zip(probe["gridcell_id"].astype(str), probe["status"]))
 
-    anchors = load_g_anchors(regions_yaml)
+    anchors = load_g_anchors()
 
     # Precompute metric reprojection once (shared transform) for centroid_x/y.
     src_metric = src.to_crs(CRS_METRIC)
@@ -311,7 +315,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-grid", type=Path, default=DEFAULT_SOURCE_GRID)
     parser.add_argument("--probe-csv", type=Path, default=DEFAULT_PROBE_CSV)
-    parser.add_argument("--regions-yaml", type=Path, default=DEFAULT_REGIONS_YAML)
     parser.add_argument("--out-gpkg", type=Path, default=DEFAULT_OUT_GPKG)
     parser.add_argument("--out-crosswalk", type=Path, default=DEFAULT_OUT_CROSSWALK)
     parser.add_argument(
@@ -336,7 +339,6 @@ def main() -> None:
     cpt, crosswalk, anchors = build(
         source_grid=args.source_grid,
         probe_csv=args.probe_csv,
-        regions_yaml=args.regions_yaml,
         threshold=args.threshold,
     )
 

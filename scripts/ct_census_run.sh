@@ -40,6 +40,12 @@ DETECTOR_CKPT=${DETECTOR_CKPT:-$ZAS/checkpoints/exp_unified_reviewall_A/best_mod
 CLS_CKPT=${CLS_CKPT:-$CLS/checkpoints/cls_pv_thermal_v2_dinov2_vits14_adaptive/best_cls.pth}
 CLS_THRESHOLDS=${CLS_THRESHOLDS:-$CLS/configs/classifier/thresholds_v2_adaptive.json}
 POSTPROC=${POSTPROC:-$ZAS/configs/postproc/v4_canonical.json}
+# Census-caliber detect + finalize flags from one shared source of truth so this
+# orchestrator, ct_census_setup.sh and runpod_detect_direct_template.sh cannot
+# drift. Honor the advertised POSTPROC= override by feeding it in before sourcing;
+# a named diagnostic profile sets CENSUS_CALIBER_MERGE_MODE=pixel-or explicitly.
+export CENSUS_CALIBER_POSTPROC="$POSTPROC"
+source "$ZAS/scripts/lib/census_caliber.sh"
 TILES_DISK=${TILES_DISK:-/root/tiles_disk}     # persistent local tile store (kept for cls)
 PARALLEL=${PARALLEL:-6}                         # detect procs (RTX 5090)
 DL_WORKERS=${DL_WORKERS:-4}                     # concurrent WMS grid downloads
@@ -106,7 +112,11 @@ write_status(){
 }
 
 # ── helpers exported for xargs subshells ────────────────────────────────────
-export ZAS CLS RUN DETECTOR_CKPT POSTPROC TILES_DISK STATE LOGS RESULTS_DIR
+# Bash cannot export ARRAY variables across the `xargs -P ... bash -c` fork, so
+# export the CENSUS_CALIBER_* scalars (incl. any operator override) and have
+# infer_one re-source the fragment to rebuild the caliber arrays in-subshell.
+export ZAS CLS RUN DETECTOR_CKPT TILES_DISK STATE LOGS RESULTS_DIR
+export CENSUS_CALIBER_POSTPROC CENSUS_CALIBER_MERGE_MODE
 
 dl_one(){
   local G=$1
@@ -121,6 +131,11 @@ dl_one(){
 }
 infer_one(){
   local G=$1
+  # Rebuild the caliber arrays IN this subshell: `export -f infer_one` carries the
+  # function and the exported CENSUS_CALIBER_* scalars, but bash cannot export the
+  # arrays across the `xargs -P ... bash -c` fork, so re-source the single source of
+  # truth here (its ${VAR:-default} assignments honor the exported override scalars).
+  source "$ZAS/scripts/lib/census_caliber.sh"
   # terminal states needing no recompute: detected (.ok) OR surveyed-empty (.empty)
   { [ -f "$STATE/infer_$G.ok" ] || [ -f "$STATE/infer_$G.empty" ]; } && return 0
   local OUT="$RESULTS_DIR/$G"
@@ -131,25 +146,18 @@ infer_one(){
   rm -f "$OUT/raw_detections.pkl" "$OUT/predictions_metric.gpkg" \
         "$OUT/predictions.geojson" "$OUT/config.json"
   rm -rf "$OUT/masks" "$OUT/vectors"
-  # ENGINE = direct Mask R-CNN (NO geoai). Two stages, matching the LOCKED CT
-  # baseline `unifiedA_li_perdet` (regions.yaml): detect_direct.py -> finalize.py
-  # --merge-mode per-detection, v4_canonical. detect_direct feeds the GPU via a
-  # DataLoader (workers/prefetch); geoai's path used a num_workers=0 loop that
-  # starved the GPU AND wrote per_detection_geoai output the cls calib never saw.
-  # Params MIRROR run_benchmark.py's direct pipeline that BUILT the baseline.
-  # detect_direct's DIRECT-mode default for detections-per-img is 300 (NOT 100 —
-  # the 100 value only applies under --parity-mode geoai, which we never set).
-  # run_benchmark.py also omits the flag and so also ran at 300, so 300 IS the
-  # baseline. We pass it EXPLICITLY (as every other orchestrator does) so nobody
-  # can "fix" the script toward 100 and silently halve the proposal cap off the
-  # cls calibration. score-thresh 0.05 / raw-mask-storage crop come from defaults
-  # and match the baseline. batch/workers/prefetch are throughput-only (no numeric
-  # effect). detect_direct resolves tiles by SOURCE grid id (CPT→G) since this fix.
+  # ENGINE = direct Mask R-CNN (NO geoai), matching the LOCKED CT baseline
+  # `unifiedA_li_perdet` (regions.yaml): detect_direct.py -> finalize.py
+  # --merge-mode per-detection, v4_canonical. Caliber flags (detections-per-img
+  # 300, chip/overlap/mask-thresh/score-thresh/raw-mask-storage) come from the
+  # single source of truth scripts/lib/census_caliber.sh so nobody can silently
+  # "fix" this script toward the geoai-parity values off the cls calibration.
+  # batch/workers/prefetch are throughput-only (no numeric effect). detect_direct
+  # resolves tiles by SOURCE grid id (CPT→G).
   SOLAR_TILES_ROOT="$TILES_DISK" python "$ZAS/detect_direct.py" \
     --grid-id "$G" --region ct --imagery-layer aerial_2025 \
     --model-run "$RUN" --model-path "$DETECTOR_CKPT" --output-dir "$OUT" \
-    --detections-per-img 300 \
-    --chip-size 400 --overlap 0.25 --mask-threshold 0.3 \
+    "${CENSUS_CALIBER_DETECT_ARGS[@]}" \
     --batch-size 4 --num-workers 2 --prefetch-factor 2 --device cuda \
     > "$LOGS/infer_$G.log" 2>&1
   local rc=$?
@@ -161,7 +169,7 @@ infer_one(){
   fi
   SOLAR_TILES_ROOT="$TILES_DISK" python "$ZAS/finalize.py" \
     --input "$OUT/raw_detections.pkl" --output-dir "$OUT" \
-    --postproc-config "$POSTPROC" --merge-mode per-detection \
+    "${CENSUS_CALIBER_FINALIZE_ARGS[@]}" \
     --allow-overwrite-canonical \
     >> "$LOGS/infer_$G.log" 2>&1
   rc=$?

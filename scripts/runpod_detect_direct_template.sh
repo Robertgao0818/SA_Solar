@@ -32,6 +32,13 @@ SAM_BATCH_SIZE="${SAM_BATCH_SIZE:-8}"   # polygons per SAM forward; laptop 8GB â
 LOG_DIR="${LOG_DIR:-/workspace/logs/direct_maskrcnn_v1}"
 mkdir -p "$LOG_DIR"
 
+# Census-caliber detector flags + finalize (postproc + merge-mode) come from one
+# shared source of truth so this template can't drift from the ct_census_*
+# orchestrators. Honor a POSTPROC= override by feeding it in before sourcing; a
+# named diagnostic profile sets CENSUS_CALIBER_MERGE_MODE=pixel-or explicitly.
+export CENSUS_CALIBER_POSTPROC="$POSTPROC"
+source "$REPO/scripts/lib/census_caliber.sh"
+
 GRIDS=(
   "${@:-G0816}"   # default to single-grid dryrun; pass grids as args to override
 )
@@ -55,22 +62,16 @@ phaseA_grid() {
     --batch-size "$BATCH_SIZE" \
     --num-workers "$NUM_WORKERS" \
     --prefetch-factor 2 \
-    --chip-size 400 \
-    --overlap 0.25 \
-    --detector-score-threshold 0.05 \
-    --detections-per-img 300 \
-    --mask-threshold 0.3 \
-    --raw-mask-storage crop \
+    "${CENSUS_CALIBER_DETECT_ARGS[@]}" \
     --device cuda \
     --profile \
     >> "$grid_log" 2>&1
 
-  echo "[$g] finalize.py (merge-mode=pixel-or, geoai-equivalent merge)" >> "$grid_log"
+  echo "[$g] finalize.py (merge-mode=$CENSUS_CALIBER_MERGE_MODE)" >> "$grid_log"
   python3 -u "$REPO/finalize.py" \
     --input "$out_dir/raw_detections.pkl" \
     --output-dir "$out_dir" \
-    --postproc-config "$POSTPROC" \
-    --merge-mode pixel-or \
+    "${CENSUS_CALIBER_FINALIZE_ARGS[@]}" \
     >> "$grid_log" 2>&1
 }
 
