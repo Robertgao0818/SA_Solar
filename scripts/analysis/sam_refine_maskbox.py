@@ -37,6 +37,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from core import region_registry
 from core.grid_utils import get_metric_crs, normalize_grid_id
+from core.postproc import compute_geometric_properties
 
 CROP_MARGIN_PX = 64
 MIN_MASK_AREA_PX = 4
@@ -239,6 +240,28 @@ def _run_sam_batch(processor, model, device, dtype, batch, prompt_mode):
     return results
 
 
+def build_refined_row(source_row, pred_columns, refined_geom, *,
+                      orig_area_m2, sam_score, sam_mask_idx):
+    """Assemble a SAM-refined output row from its pre-SAM source row.
+
+    Copies every pre-SAM attribute except geometry, swaps in ``refined_geom``,
+    and sets ``area_m2`` to the refined geometry's area. ``orig_area_m2`` /
+    ``sam_area_m2`` hold the pre-SAM and refined areas as provenance.
+
+    The copied ``elongation`` / ``solidity`` still describe the PRE-SAM polygon;
+    ``run_one_grid`` recomputes all geometry-derived columns (area_m2,
+    elongation, solidity) from the refined geometry before writing.
+    """
+    out_row = {k: source_row[k] for k in pred_columns if k != "geometry"}
+    out_row["geometry"] = refined_geom
+    out_row["sam_score"] = sam_score
+    out_row["sam_mask_idx"] = sam_mask_idx
+    out_row["orig_area_m2"] = float(orig_area_m2)
+    out_row["sam_area_m2"] = float(refined_geom.area)
+    out_row["area_m2"] = float(refined_geom.area)
+    return out_row
+
+
 def run_one_grid(
     grid_id,
     *,
@@ -338,20 +361,24 @@ def run_one_grid(
             if not poly_metric.is_valid or poly_metric.is_empty:
                 n_empty_mask += 1
                 continue
-            row = rec["row"]
-            out_row = {k: row[k] for k in preds.columns if k != "geometry"}
-            out_row["geometry"] = poly_metric
-            out_row["sam_score"] = score
-            out_row["sam_mask_idx"] = best_idx
-            out_row["orig_area_m2"] = float(rec["geom_metric"].area)
-            out_row["sam_area_m2"] = float(poly_metric.area)
-            out_records.append(out_row)
+            out_records.append(build_refined_row(
+                rec["row"],
+                preds.columns,
+                poly_metric,
+                orig_area_m2=float(rec["geom_metric"].area),
+                sam_score=score,
+                sam_mask_idx=best_idx,
+            ))
 
     out_dir = out_root / grid_id
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "predictions_metric.gpkg"
     if out_records:
         gdf = gpd.GeoDataFrame(out_records, crs=metric_crs)
+        # Geometry-derived columns copied from the pre-SAM source row describe
+        # the pre-SAM polygon; recompute them from the refined geometry so
+        # area_m2/elongation/solidity match the geometry that is written.
+        gdf = compute_geometric_properties(gdf)
         gdf.to_file(out_path, driver="GPKG")
     else:
         gdf = gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=metric_crs)

@@ -49,7 +49,12 @@ def merge_overlapping(gdf: gpd.GeoDataFrame, iou_thresh: float,
     """Polygon-level UNION-merge under IoU gating. Polygons with IoU >
     threshold are clustered (transitively) and each cluster becomes one
     unary_union polygon. Attributes come from the cluster's max-score
-    member; area_m2 is recomputed."""
+    member.
+
+    Invariant: every output row satisfies ``area_m2 == geometry.area`` when an
+    ``area_m2`` column is present. Singleton clusters carry their source row's
+    attributes through unchanged, so a stale upstream ``area_m2`` (e.g. copied
+    from a pre-SAM geometry) is corrected here regardless of upstream state."""
     if len(gdf) == 0:
         return gdf
     geoms = list(gdf.geometry.values)
@@ -96,6 +101,8 @@ def merge_overlapping(gdf: gpd.GeoDataFrame, iou_thresh: float,
         rows.append(rec)
 
     out = gpd.GeoDataFrame(rows, geometry="geometry", crs=gdf.crs)
+    if "area_m2" in out.columns and len(out) > 0:
+        out["area_m2"] = out.geometry.area
     return out
 
 

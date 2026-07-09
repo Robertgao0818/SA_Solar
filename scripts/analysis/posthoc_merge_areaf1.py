@@ -87,7 +87,13 @@ def merge_overlapping(gdf: gpd.GeoDataFrame, iou_thresh: float,
         rec["area_m2"] = float(merged.area) if hasattr(merged, "area") else None
         rec["n_merged"] = len(members)
         rows.append(rec)
-    return gpd.GeoDataFrame(rows, geometry="geometry", crs=gdf.crs)
+    out = gpd.GeoDataFrame(rows, geometry="geometry", crs=gdf.crs)
+    # Invariant: area_m2 == geometry.area for every output row; singleton
+    # clusters pass source attributes through and may carry a stale upstream
+    # area_m2 (e.g. copied from a pre-SAM geometry).
+    if "area_m2" in out.columns and len(out) > 0:
+        out["area_m2"] = out.geometry.area
+    return out
 
 
 def area_f1(pred_gdf: gpd.GeoDataFrame, gt_gdf: gpd.GeoDataFrame) -> dict:
