@@ -35,14 +35,14 @@
 ## Execution Track
 <!-- progress:roadmap:start -->
 ### Recently Completed
+- 2026-07-09: fix(analysis): enforce area_m2 == geometry.area after SAM refine + posthoc merge
+- 2026-07-05: fix(postproc): D5 ruling — unify conf/elong tier semantics to first-match (#6)
 - 2026-07-05: fix(arch-review): land ready-for-agent defect fixes #3/#4/#5
 - 2026-06-24: docs(validation): validation methodology + CT census GT eval + reproducibility study
 - 2026-06-24: feat(census): CT census reporting, output table, GT eval + ops scripts
 - 2026-06-24: feat(training): deepen mask-supervision patch lifecycle
 - 2026-06-24: refactor(analysis): extract core/polygon_validation.py shared module (ADR-0001)
 - 2026-06-23: docs(validation): add complete Chinese validation & robustness methodology
-- 2026-06-16: perf(census): background per-batch Dropbox backup so next batch's detect overlaps upload
-- 2026-06-16: feat(census): split surveyed-empty from failure + per-grid coverage manifest
 
 ### Next Up
 - Repository structure cleanup: reduce root-level script clutter and group workflows by purpose.
